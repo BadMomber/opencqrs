@@ -158,17 +158,6 @@ public interface ExpectDsl {
          * Returns an interface for asserting against all captured events as a whole. Use this when you need to verify
          * the complete set of events without cursor-based navigation. Each call operates on the full event list.
          *
-         * <p>Example:
-         *
-         * <pre>
-         * .succeeds()
-         *     .allEvents()
-         *     .count(2)
-         *     .exactly(
-         *         e -&gt; e.ofType(OrderPlacedEvent.class),
-         *         e -&gt; e.ofType(InventoryReservedEvent.class));
-         * </pre>
-         *
          * @return an {@link All} interface for event assertions
          * @see #nextEvents()
          */
@@ -181,19 +170,9 @@ public interface ExpectDsl {
          *
          * <p>Navigation methods ({@link Next#skipping(int)}, {@link Next#matches(Consumer)}) advance the cursor and
          * return {@link Next} for further navigation. Consuming methods ({@link Next#single(Consumer)},
-         * {@link Next#any(Consumer)}, {@link Next#none(Consumer)}, {@link Next#exactly(Consumer, Consumer[])},
-         * {@link Next#noMore()}, {@link Next#remaining(int)}) consume remaining events and return {@link Succeeding}.
-         *
-         * <p>Example:
-         *
-         * <pre>
-         * .succeeds()
-         *     .nextEvents()
-         *     .matches(e -&gt; e.ofType(OrderPlacedEvent.class))
-         *     .skipping(1)
-         *     .noMore()
-         *     .havingResult(expectedId);
-         * </pre>
+         * {@link Next#once(Consumer)}, {@link Next#any(Consumer)}, {@link Next#every(Consumer)},
+         * {@link Next#none(Consumer)}, {@link Next#exactly(Object...)}, {@link Next#noMore()},
+         * {@link Next#remaining(int)}) consume remaining events and return {@link Succeeding}.
          *
          * @return a {@link Next} interface for sequential event assertions
          * @see #allEvents()
@@ -343,14 +322,7 @@ public interface ExpectDsl {
      * complete event list without maintaining cursor state.
      *
      * <p>Each method validates events against the entire captured event list and returns {@code this} for method
-     * chaining, allowing multiple assertions to be combined:
-     *
-     * <pre>
-     * .allEvents()
-     *     .count(3)
-     *     .single(e -&gt; e.ofType(OrderConfirmedEvent.class))
-     *     .none(e -&gt; e.ofType(OrderCancelledEvent.class));
-     * </pre>
+     * chaining, allowing multiple assertions to be combined.
      *
      * @see Next for cursor-based sequential event assertions
      */
@@ -367,42 +339,44 @@ public interface ExpectDsl {
         All count(int count);
 
         /**
-         * Asserts that exactly one event in the captured list matches the specified validation. The validation is
-         * applied to each captured event individually, and exactly one must pass — but other non-matching events may
-         * exist. This does <strong>not</strong> assert that only one event was captured in total.
+         * Asserts that exactly one event was captured and that it matches the specified validation. The captured event
+         * stream must have length 1.
          *
-         * <p>To assert that exactly one event was captured <strong>and</strong> it matches, use
-         * {@link #exactly(Consumer, Consumer[])} with a single consumer, or combine with {@link #count(int)}:
-         *
-         * <pre>
-         * .allEvents().exactly(e -&gt; e.ofType(PaymentReceivedEvent.class));
-         * // or
-         * .allEvents().count(1).single(e -&gt; e.ofType(PaymentReceivedEvent.class));
-         * </pre>
-         *
-         * @param consumer a consumer that validates a single event via {@link EventValidator}
+         * @param consumer a consumer that validates the event via {@link EventValidator}
          * @return {@code this} for method chaining
-         * @throws AssertionError if zero or more than one event matches
+         * @throws AssertionError if the event count is not exactly 1 or the single event fails validation
          */
         All single(Consumer<EventValidator> consumer);
 
         /**
-         * Asserts that at least one event in the captured list matches the validation.
+         * Asserts that exactly one event in the captured list matches the validation. The stream may have any length,
+         * but exactly one event must match — non-matching events are allowed.
          *
          * @param consumer a consumer that validates events via {@link EventValidator}
          * @return {@code this} for method chaining
-         * @throws AssertionError if no event matches
+         * @throws AssertionError if zero or more than one event matches
+         */
+        All once(Consumer<EventValidator> consumer);
+
+        /**
+         * Asserts that at least one event in the captured list matches the validation. The stream may have any length,
+         * but must contain at least one matching event (multiple matches are allowed).
+         *
+         * @param consumer a consumer that validates events via {@link EventValidator}
+         * @return {@code this} for method chaining
+         * @throws AssertionError if no event matches or the stream is empty
          */
         All any(Consumer<EventValidator> consumer);
 
         /**
-         * Asserts that all captured events match the specified validation.
+         * Asserts that every captured event matches the validation. The stream must contain at least one event — an
+         * empty stream causes an assertion error (fail-fast).
          *
          * @param consumer a consumer that validates each event via {@link EventValidator}
          * @return {@code this} for method chaining
          * @throws AssertionError if any event fails validation or no events exist
          */
-        All all(Consumer<EventValidator> consumer);
+        All every(Consumer<EventValidator> consumer);
 
         /**
          * Asserts that no captured events match the validation.
@@ -415,15 +389,8 @@ public interface ExpectDsl {
 
         /**
          * Asserts that the captured events match exactly the provided event payloads in order, using
-         * {@link Object#equals(Object)}. The number of captured events must equal the number of expected payloads —
-         * both too few and too many events cause an error.
-         *
-         * <p>Example:
-         *
-         * <pre>
-         * .allEvents()
-         *     .exactly(new OrderPlacedEvent(...), new PaymentReceivedEvent(...));
-         * </pre>
+         * {@link Object#equals(Object)}. Only payloads are compared — meta-data and subject are ignored. The number of
+         * captured events must equal the number of expected payloads — both too few and too many events cause an error.
          *
          * @param events the expected event payloads in order
          * @return {@code this} for method chaining
@@ -449,21 +416,13 @@ public interface ExpectDsl {
      * <ul>
      *   <li><strong>Navigating</strong> ({@link #skipping(int)}, {@link #matches(Consumer)}) — advance the cursor and
      *       return {@code Next} for further chaining.
-     *   <li><strong>Consuming</strong> ({@link #single(Consumer)}, {@link #any(Consumer)}, {@link #none(Consumer)},
-     *       {@link #exactly(Consumer, Consumer[])}, {@link #noMore()}, {@link #remaining(int)}) — consume remaining
-     *       events and return {@link Succeeding} for result/state assertions or further event assertions.
+     *   <li><strong>Consuming</strong> ({@link #single(Consumer)}, {@link #once(Consumer)}, {@link #any(Consumer)},
+     *       {@link #every(Consumer)}, {@link #none(Consumer)}, {@link #exactly(Object...)}, {@link #noMore()},
+     *       {@link #remaining(int)}) — consume remaining events and return {@link Succeeding} for result/state
+     *       assertions or further event assertions.
      * </ul>
      *
-     * <p>Example:
-     *
-     * <pre>
-     * .nextEvents()
-     *     .matches(e -&gt; e.ofType(OrderPlacedEvent.class))   // validate and consume first event
-     *     .skipping(1)                                           // skip second event
-     *     .noMore()                                              // assert no more events
-     *     .allEvents()                                           // switch to all-events view
-     *     .count(2);                                             // verify total count
-     * </pre>
+     * <p>All consuming matcher methods operate on the <em>remaining</em> events from the current cursor position.
      *
      * @see All for non-sequential assertions on all events
      */
@@ -507,29 +466,49 @@ public interface ExpectDsl {
         Succeeding remaining(int count);
 
         /**
-         * Consumes all remaining events from the current cursor position and asserts that exactly one matches the
-         * validation.
+         * Asserts that exactly one event remains from the current cursor position and that it matches the validation.
+         * The remaining stream must have length 1, then the event is consumed.
          *
-         * @param consumer a consumer that validates a single event via {@link EventValidator}
+         * @param consumer a consumer that validates the event via {@link EventValidator}
          * @return a {@link Succeeding} interface for further assertions
-         * @throws AssertionError if zero or more than one event matches
+         * @throws AssertionError if the remaining event count is not exactly 1 or the event fails validation
          */
         Succeeding single(Consumer<EventValidator> consumer);
 
         /**
-         * Consumes all remaining events from the current cursor position and asserts that at least one matches the
-         * validation.
+         * Consumes all remaining events and asserts that exactly one of them matches the validation. The remaining
+         * stream may have any length.
          *
          * @param consumer a consumer that validates events via {@link EventValidator}
          * @return a {@link Succeeding} interface for further assertions
-         * @throws AssertionError if no remaining event matches
+         * @throws AssertionError if zero or more than one remaining event matches
+         */
+        Succeeding once(Consumer<EventValidator> consumer);
+
+        /**
+         * Consumes all remaining events and asserts that at least one of them matches the validation. The remaining
+         * stream may have any length (multiple matches are allowed) but must contain at least one matching event.
+         *
+         * @param consumer a consumer that validates events via {@link EventValidator}
+         * @return a {@link Succeeding} interface for further assertions
+         * @throws AssertionError if no remaining event matches or the remaining stream is empty
          */
         Succeeding any(Consumer<EventValidator> consumer);
 
         /**
-         * Consumes events from the current cursor position and asserts that the remaining event payloads match exactly
-         * the provided payloads in order, using {@link Object#equals(Object)}. The number of remaining events must
-         * equal the number of expected payloads.
+         * Consumes all remaining events and asserts that every one of them matches the validation. The remaining stream
+         * must contain at least one event — an empty remaining stream causes an assertion error (fail-fast).
+         *
+         * @param consumer a consumer that validates each event via {@link EventValidator}
+         * @return a {@link Succeeding} interface for further assertions
+         * @throws AssertionError if any remaining event fails validation or no remaining events exist
+         */
+        Succeeding every(Consumer<EventValidator> consumer);
+
+        /**
+         * Consumes all remaining events and asserts that the remaining event payloads match exactly the provided
+         * payloads in order, using {@link Object#equals(Object)}. Only payloads are compared — meta-data and subject
+         * are ignored. The number of remaining events must equal the number of expected payloads.
          *
          * @param events the expected event payloads in order
          * @return a {@link Succeeding} interface for further assertions
@@ -538,7 +517,7 @@ public interface ExpectDsl {
         Succeeding exactly(Object... events);
 
         /**
-         * Consumes all remaining events from the current cursor position and asserts that none match the validation.
+         * Consumes all remaining events and asserts that none of them match the validation.
          *
          * @param consumer a consumer that validates events via {@link EventValidator}
          * @return a {@link Succeeding} interface for further assertions

@@ -1482,6 +1482,79 @@ public class CommandHandlingTestFixtureTest {
         public class AllEventsSingle {
 
             @Test
+            public void streamLengthOneAndMatch_notFailing() {
+                assertThatCode(() -> subject.using(
+                                        DummyState.class,
+                                        (CommandHandler.ForCommand<DummyState, DummyCommand, Void>) (c, publisher) -> {
+                                            publisher.publish(new EventA("one"));
+                                            return null;
+                                        })
+                                .given()
+                                .nothing()
+                                .when(new DummyCommand())
+                                .succeeds()
+                                .allEvents()
+                                .single(e -> e.ofType(EventA.class)))
+                        .doesNotThrowAnyException();
+            }
+
+            @Test
+            public void streamLengthOneButNoMatch_failing() {
+                assertThatThrownBy(() -> subject.using(
+                                        DummyState.class,
+                                        (CommandHandler.ForCommand<DummyState, DummyCommand, Void>) (c, publisher) -> {
+                                            publisher.publish(new EventA("one"));
+                                            return null;
+                                        })
+                                .given()
+                                .nothing()
+                                .when(new DummyCommand())
+                                .succeeds()
+                                .allEvents()
+                                .single(e -> e.ofType(EventC.class)))
+                        .isInstanceOf(AssertionError.class);
+            }
+
+            @Test
+            public void streamLengthGreaterOne_failing() {
+                assertThatThrownBy(() -> subject.using(
+                                        DummyState.class,
+                                        (CommandHandler.ForCommand<DummyState, DummyCommand, Void>) (c, publisher) -> {
+                                            publisher.publish(new EventA("one"));
+                                            publisher.publish(new EventB(2L));
+                                            return null;
+                                        })
+                                .given()
+                                .nothing()
+                                .when(new DummyCommand())
+                                .succeeds()
+                                .allEvents()
+                                .single(e -> e.ofType(EventA.class)))
+                        .isInstanceOf(AssertionError.class)
+                        .hasMessageContainingAll("exactly one event", "captured 2");
+            }
+
+            @Test
+            public void emptyStream_failing() {
+                assertThatThrownBy(() -> subject.using(
+                                        DummyState.class, (CommandHandler.ForCommand<DummyState, DummyCommand, Void>)
+                                                (c, publisher) -> null)
+                                .given()
+                                .nothing()
+                                .when(new DummyCommand())
+                                .succeeds()
+                                .allEvents()
+                                .single(e -> e.ofType(EventA.class)))
+                        .isInstanceOf(AssertionError.class)
+                        .hasMessageContainingAll("exactly one event", "captured 0");
+            }
+        }
+
+        @Nested
+        @DisplayName("allEvents().once")
+        public class AllEventsOnce {
+
+            @Test
             public void singleMatch_notFailing() {
                 assertThatCode(() -> subject.using(
                                         DummyState.class,
@@ -1495,7 +1568,7 @@ public class CommandHandlingTestFixtureTest {
                                 .when(new DummyCommand())
                                 .succeeds()
                                 .allEvents()
-                                .single(e -> e.ofType(EventA.class)))
+                                .once(e -> e.ofType(EventA.class)))
                         .doesNotThrowAnyException();
             }
 
@@ -1513,7 +1586,7 @@ public class CommandHandlingTestFixtureTest {
                                 .when(new DummyCommand())
                                 .succeeds()
                                 .allEvents()
-                                .single(e -> e.ofType(EventC.class)))
+                                .once(e -> e.ofType(EventC.class)))
                         .isInstanceOf(AssertionError.class)
                         .hasMessageContainingAll("exactly one", "found none");
             }
@@ -1532,7 +1605,7 @@ public class CommandHandlingTestFixtureTest {
                                 .when(new DummyCommand())
                                 .succeeds()
                                 .allEvents()
-                                .single(e -> e.ofType(EventA.class)))
+                                .once(e -> e.ofType(EventA.class)))
                         .isInstanceOf(AssertionError.class)
                         .hasMessageContainingAll("exactly one", "found 2");
             }
@@ -1596,11 +1669,26 @@ public class CommandHandlingTestFixtureTest {
                         .isInstanceOf(AssertionError.class)
                         .hasMessageContainingAll("at least one", "found none");
             }
+
+            @Test
+            public void emptyStream_failing() {
+                assertThatThrownBy(() -> subject.using(
+                                        DummyState.class, (CommandHandler.ForCommand<DummyState, DummyCommand, Void>)
+                                                (c, publisher) -> null)
+                                .given()
+                                .nothing()
+                                .when(new DummyCommand())
+                                .succeeds()
+                                .allEvents()
+                                .any(e -> e.ofType(EventA.class)))
+                        .isInstanceOf(AssertionError.class)
+                        .hasMessageContainingAll("at least one", "no events were captured");
+            }
         }
 
         @Nested
-        @DisplayName("allEvents().all")
-        public class AllEventsAll {
+        @DisplayName("allEvents().every")
+        public class AllEventsEvery {
 
             @Test
             public void allMatch_notFailing() {
@@ -1616,7 +1704,7 @@ public class CommandHandlingTestFixtureTest {
                                 .when(new DummyCommand())
                                 .succeeds()
                                 .allEvents()
-                                .all(e -> e.ofType(EventA.class)))
+                                .every(e -> e.ofType(EventA.class)))
                         .doesNotThrowAnyException();
             }
 
@@ -1634,7 +1722,7 @@ public class CommandHandlingTestFixtureTest {
                                 .when(new DummyCommand())
                                 .succeeds()
                                 .allEvents()
-                                .all(e -> e.ofType(EventA.class)))
+                                .every(e -> e.ofType(EventA.class)))
                         .isInstanceOf(AssertionError.class);
             }
 
@@ -1648,7 +1736,7 @@ public class CommandHandlingTestFixtureTest {
                                 .when(new DummyCommand())
                                 .succeeds()
                                 .allEvents()
-                                .all(e -> e.ofType(EventA.class)))
+                                .every(e -> e.ofType(EventA.class)))
                         .isInstanceOf(AssertionError.class)
                         .hasMessageContainingAll("no events were captured");
             }
@@ -1988,6 +2076,81 @@ public class CommandHandlingTestFixtureTest {
         public class NextEventsSingle {
 
             @Test
+            public void remainingLengthOneAndMatch_notFailing() {
+                assertThatCode(() -> subject.using(
+                                        DummyState.class,
+                                        (CommandHandler.ForCommand<DummyState, DummyCommand, Void>) (c, publisher) -> {
+                                            publisher.publish(new EventA("one"));
+                                            return null;
+                                        })
+                                .given()
+                                .nothing()
+                                .when(new DummyCommand())
+                                .succeeds()
+                                .nextEvents()
+                                .single(e -> e.ofType(EventA.class)))
+                        .doesNotThrowAnyException();
+            }
+
+            @Test
+            public void remainingLengthOneAfterSkip_notFailing() {
+                assertThatCode(() -> subject.using(
+                                        DummyState.class,
+                                        (CommandHandler.ForCommand<DummyState, DummyCommand, Void>) (c, publisher) -> {
+                                            publisher.publish(new EventA("one"));
+                                            publisher.publish(new EventB(2L));
+                                            return null;
+                                        })
+                                .given()
+                                .nothing()
+                                .when(new DummyCommand())
+                                .succeeds()
+                                .nextEvents()
+                                .skipping(1)
+                                .single(e -> e.ofType(EventB.class)))
+                        .doesNotThrowAnyException();
+            }
+
+            @Test
+            public void remainingLengthGreaterOne_failing() {
+                assertThatThrownBy(() -> subject.using(
+                                        DummyState.class,
+                                        (CommandHandler.ForCommand<DummyState, DummyCommand, Void>) (c, publisher) -> {
+                                            publisher.publish(new EventA("one"));
+                                            publisher.publish(new EventB(2L));
+                                            return null;
+                                        })
+                                .given()
+                                .nothing()
+                                .when(new DummyCommand())
+                                .succeeds()
+                                .nextEvents()
+                                .single(e -> e.ofType(EventA.class)))
+                        .isInstanceOf(AssertionError.class)
+                        .hasMessageContainingAll("exactly one remaining", "2 remain");
+            }
+
+            @Test
+            public void noRemaining_failing() {
+                assertThatThrownBy(() -> subject.using(
+                                        DummyState.class, (CommandHandler.ForCommand<DummyState, DummyCommand, Void>)
+                                                (c, publisher) -> null)
+                                .given()
+                                .nothing()
+                                .when(new DummyCommand())
+                                .succeeds()
+                                .nextEvents()
+                                .single(e -> e.ofType(EventA.class)))
+                        .isInstanceOf(AssertionError.class)
+                        .hasMessageContainingAll("exactly one remaining", "none remain");
+            }
+        }
+
+        @Nested
+        @DisplayName("nextEvents().once")
+        public class NextEventsOnce {
+
+            @Test
             public void singleMatch_notFailing() {
                 assertThatCode(() -> subject.using(
                                         DummyState.class,
@@ -2001,7 +2164,7 @@ public class CommandHandlingTestFixtureTest {
                                 .when(new DummyCommand())
                                 .succeeds()
                                 .nextEvents()
-                                .single(e -> e.ofType(EventA.class)))
+                                .once(e -> e.ofType(EventA.class)))
                         .doesNotThrowAnyException();
             }
 
@@ -2019,7 +2182,7 @@ public class CommandHandlingTestFixtureTest {
                                 .when(new DummyCommand())
                                 .succeeds()
                                 .nextEvents()
-                                .single(e -> e.ofType(EventC.class)))
+                                .once(e -> e.ofType(EventC.class)))
                         .isInstanceOf(AssertionError.class)
                         .hasMessageContainingAll("exactly one", "remaining", "found none");
             }
@@ -2038,7 +2201,7 @@ public class CommandHandlingTestFixtureTest {
                                 .when(new DummyCommand())
                                 .succeeds()
                                 .nextEvents()
-                                .single(e -> e.ofType(EventA.class)))
+                                .once(e -> e.ofType(EventA.class)))
                         .isInstanceOf(AssertionError.class)
                         .hasMessageContainingAll("exactly one", "remaining", "found 2");
             }
@@ -2059,7 +2222,7 @@ public class CommandHandlingTestFixtureTest {
                                 .succeeds()
                                 .nextEvents()
                                 .skipping(1)
-                                .single(e -> e.ofType(EventB.class)))
+                                .once(e -> e.ofType(EventB.class)))
                         .doesNotThrowAnyException();
             }
 
@@ -2079,7 +2242,7 @@ public class CommandHandlingTestFixtureTest {
                                 .succeeds()
                                 .nextEvents()
                                 .skipping(2)
-                                .single(e -> e.ofType(EventA.class)))
+                                .once(e -> e.ofType(EventA.class)))
                         .isInstanceOf(AssertionError.class)
                         .hasMessageContainingAll("exactly one", "remaining", "found none");
             }
@@ -2183,6 +2346,97 @@ public class CommandHandlingTestFixtureTest {
                                 .any(e -> e.ofType(EventA.class)))
                         .isInstanceOf(AssertionError.class)
                         .hasMessageContainingAll("at least one", "remaining", "found none");
+            }
+
+            @Test
+            public void noRemaining_failing() {
+                assertThatThrownBy(() -> subject.using(
+                                        DummyState.class, (CommandHandler.ForCommand<DummyState, DummyCommand, Void>)
+                                                (c, publisher) -> null)
+                                .given()
+                                .nothing()
+                                .when(new DummyCommand())
+                                .succeeds()
+                                .nextEvents()
+                                .any(e -> e.ofType(EventA.class)))
+                        .isInstanceOf(AssertionError.class)
+                        .hasMessageContainingAll("at least one", "no events remain");
+            }
+        }
+
+        @Nested
+        @DisplayName("nextEvents().every")
+        public class NextEventsEvery {
+
+            @Test
+            public void allMatch_notFailing() {
+                assertThatCode(() -> subject.using(
+                                        DummyState.class,
+                                        (CommandHandler.ForCommand<DummyState, DummyCommand, Void>) (c, publisher) -> {
+                                            publisher.publish(new EventA("one"));
+                                            publisher.publish(new EventA("two"));
+                                            return null;
+                                        })
+                                .given()
+                                .nothing()
+                                .when(new DummyCommand())
+                                .succeeds()
+                                .nextEvents()
+                                .every(e -> e.ofType(EventA.class)))
+                        .doesNotThrowAnyException();
+            }
+
+            @Test
+            public void allMatchAfterSkip_notFailing() {
+                assertThatCode(() -> subject.using(
+                                        DummyState.class,
+                                        (CommandHandler.ForCommand<DummyState, DummyCommand, Void>) (c, publisher) -> {
+                                            publisher.publish(new EventA("first"));
+                                            publisher.publish(new EventB(2L));
+                                            publisher.publish(new EventB(3L));
+                                            return null;
+                                        })
+                                .given()
+                                .nothing()
+                                .when(new DummyCommand())
+                                .succeeds()
+                                .nextEvents()
+                                .skipping(1)
+                                .every(e -> e.ofType(EventB.class)))
+                        .doesNotThrowAnyException();
+            }
+
+            @Test
+            public void someDontMatch_failing() {
+                assertThatThrownBy(() -> subject.using(
+                                        DummyState.class,
+                                        (CommandHandler.ForCommand<DummyState, DummyCommand, Void>) (c, publisher) -> {
+                                            publisher.publish(new EventA("one"));
+                                            publisher.publish(new EventB(2L));
+                                            return null;
+                                        })
+                                .given()
+                                .nothing()
+                                .when(new DummyCommand())
+                                .succeeds()
+                                .nextEvents()
+                                .every(e -> e.ofType(EventA.class)))
+                        .isInstanceOf(AssertionError.class);
+            }
+
+            @Test
+            public void noRemaining_failing() {
+                assertThatThrownBy(() -> subject.using(
+                                        DummyState.class, (CommandHandler.ForCommand<DummyState, DummyCommand, Void>)
+                                                (c, publisher) -> null)
+                                .given()
+                                .nothing()
+                                .when(new DummyCommand())
+                                .succeeds()
+                                .nextEvents()
+                                .every(e -> e.ofType(EventA.class)))
+                        .isInstanceOf(AssertionError.class)
+                        .hasMessageContainingAll("no events remain");
             }
         }
 

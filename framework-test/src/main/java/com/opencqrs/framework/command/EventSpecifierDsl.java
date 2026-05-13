@@ -1,6 +1,7 @@
 /* Copyright (C) 2026 OpenCQRS and contributors */
 package com.opencqrs.framework.command;
 
+import com.opencqrs.esdb.client.Event;
 import java.time.Instant;
 import java.util.Map;
 

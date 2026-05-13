@@ -704,26 +704,31 @@ public class CommandHandlingTestFixture<C extends Command> {
 
             @Override
             public ExpectDsl.All single(Consumer<ExpectDsl.EventValidator> consumer) {
-                List<Consumer<ExpectDsl.EventValidator>> allConsumers = new ArrayList<>();
-                allConsumers.add(consumer);
+                if (capturedEvents.size() != 1) {
+                    throw new AssertionError("Expected exactly one event, but captured " + capturedEvents.size());
+                }
+                EventValidatorImpl validator = new EventValidatorImpl(capturedEvents.get(0));
+                consumer.accept(validator);
+                return this;
+            }
 
-                for (Consumer<ExpectDsl.EventValidator> validatorConsumer : allConsumers) {
-                    int matches = 0;
+            @Override
+            public ExpectDsl.All once(Consumer<ExpectDsl.EventValidator> consumer) {
+                int matches = 0;
 
-                    for (CapturedEvent event : capturedEvents) {
-                        try {
-                            EventValidatorImpl validator = new EventValidatorImpl(event);
-                            validatorConsumer.accept(validator);
-                            matches++;
-                        } catch (AssertionError e) {
-                        }
+                for (CapturedEvent event : capturedEvents) {
+                    try {
+                        EventValidatorImpl validator = new EventValidatorImpl(event);
+                        consumer.accept(validator);
+                        matches++;
+                    } catch (AssertionError e) {
                     }
+                }
 
-                    if (matches == 0) {
-                        throw new AssertionError("Expected exactly one event matching validator, but found none");
-                    } else if (matches > 1) {
-                        throw new AssertionError("Expected exactly one event matching validator, but found " + matches);
-                    }
+                if (matches == 0) {
+                    throw new AssertionError("Expected exactly one event matching validator, but found none");
+                } else if (matches > 1) {
+                    throw new AssertionError("Expected exactly one event matching validator, but found " + matches);
                 }
 
                 return this;
@@ -731,6 +736,11 @@ public class CommandHandlingTestFixture<C extends Command> {
 
             @Override
             public ExpectDsl.All any(Consumer<ExpectDsl.EventValidator> consumer) {
+                if (capturedEvents.isEmpty()) {
+                    throw new AssertionError(
+                            "Expected at least one event matching validator, but no events were captured");
+                }
+
                 boolean found = false;
 
                 for (CapturedEvent event : capturedEvents) {
@@ -751,9 +761,9 @@ public class CommandHandlingTestFixture<C extends Command> {
             }
 
             @Override
-            public ExpectDsl.All all(Consumer<ExpectDsl.EventValidator> consumer) {
+            public ExpectDsl.All every(Consumer<ExpectDsl.EventValidator> consumer) {
                 if (capturedEvents.isEmpty()) {
-                    throw new AssertionError("Expected all events to match validator, but no events were captured");
+                    throw new AssertionError("Expected every event to match validator, but no events were captured");
                 }
 
                 for (CapturedEvent event : capturedEvents) {
@@ -845,15 +855,40 @@ public class CommandHandlingTestFixture<C extends Command> {
 
             @Override
             public ExpectDsl.Succeeding single(Consumer<ExpectDsl.EventValidator> consumer) {
+                if (!nextEvent.hasNext()) {
+                    throw new AssertionError("Expected exactly one remaining event, but none remain");
+                }
+                CapturedEvent event = nextEvent.next();
+                if (nextEvent.hasNext()) {
+                    int extra = 1;
+                    while (nextEvent.hasNext()) {
+                        nextEvent.next();
+                        extra++;
+                    }
+                    throw new AssertionError("Expected exactly one remaining event, but " + extra + " remain");
+                }
+                EventValidatorImpl validator = new EventValidatorImpl(event);
+                consumer.accept(validator);
+                return new Succeeding();
+            }
+
+            @Override
+            public ExpectDsl.Succeeding once(Consumer<ExpectDsl.EventValidator> consumer) {
                 int matches = 0;
+                int seen = 0;
                 while (nextEvent.hasNext()) {
                     CapturedEvent event = nextEvent.next();
+                    seen++;
                     try {
                         EventValidatorImpl validator = new EventValidatorImpl(event);
                         consumer.accept(validator);
                         matches++;
                     } catch (AssertionError e) {
                     }
+                }
+                if (seen == 0) {
+                    throw new AssertionError(
+                            "Expected exactly one event matching validator in remaining events, but no events remain");
                 }
                 if (matches == 0) {
                     throw new AssertionError(
@@ -867,6 +902,10 @@ public class CommandHandlingTestFixture<C extends Command> {
 
             @Override
             public ExpectDsl.Succeeding any(Consumer<ExpectDsl.EventValidator> consumer) {
+                if (!nextEvent.hasNext()) {
+                    throw new AssertionError(
+                            "Expected at least one remaining event matching validator, but no events remain");
+                }
                 boolean found = false;
                 while (nextEvent.hasNext()) {
                     CapturedEvent event = nextEvent.next();
@@ -880,6 +919,19 @@ public class CommandHandlingTestFixture<C extends Command> {
                 if (!found) {
                     throw new AssertionError(
                             "Expected at least one remaining event matching validator, but found none");
+                }
+                return new Succeeding();
+            }
+
+            @Override
+            public ExpectDsl.Succeeding every(Consumer<ExpectDsl.EventValidator> consumer) {
+                if (!nextEvent.hasNext()) {
+                    throw new AssertionError("Expected every remaining event to match validator, but no events remain");
+                }
+                while (nextEvent.hasNext()) {
+                    CapturedEvent event = nextEvent.next();
+                    EventValidatorImpl validator = new EventValidatorImpl(event);
+                    consumer.accept(validator);
                 }
                 return new Succeeding();
             }

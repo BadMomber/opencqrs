@@ -26,8 +26,7 @@ public class BookHandlingTest {
                 .when(new PurchaseBookCommand("4711", "JRR Tolkien", "LOTR", 435))
                 .succeeds()
                 .allEvents()
-                .single(event ->
-                        event.asserting(a -> a.commandSubject().noMetaData().payloadType(BookPurchasedEvent.class)));
+                .exactly(new BookPurchasedEvent("4711", "JRR Tolkien", "LOTR", 435));
     }
 
     @Test
@@ -45,12 +44,13 @@ public class BookHandlingTest {
 
     @Test
     public void canBeReturnedIfLent(@Autowired CommandHandlingTestFixture<ReturnBookCommand> fixture) {
+        var reader = UUID.randomUUID();
         fixture.given()
-                .state(new Book("4711", 435, Set.of(), new Book.Lending.Lent(UUID.randomUUID())))
+                .state(new Book("4711", 435, Set.of(), new Book.Lending.Lent(reader)))
                 .when(new ReturnBookCommand("4711"))
                 .succeeds()
                 .allEvents()
-                .single(e -> e.ofType(BookReturnedEvent.class));
+                .exactly(new BookReturnedEvent("4711", reader));
     }
 
     @Test

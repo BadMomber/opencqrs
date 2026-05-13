@@ -14,12 +14,12 @@ public class PageHandlingTest {
 
     @Test
     public void pageMarkedAsDamaged(@Autowired CommandHandlingTestFixture<MarkBookPageDamagedCommand> fixture) {
+        var reader = UUID.randomUUID();
         fixture.given()
                 .nothing()
-                .when(new MarkBookPageDamagedCommand("4711", 42L, UUID.randomUUID()))
+                .when(new MarkBookPageDamagedCommand("4711", 42L, reader))
                 .succeeds()
                 .allEvents()
-                .single(event ->
-                        event.asserting(a -> a.commandSubject().payloadType(BookPageDamagedEvent.ByReader.class)));
+                .exactly(new BookPageDamagedEvent.ByReader("4711", 42L, reader));
     }
 }
