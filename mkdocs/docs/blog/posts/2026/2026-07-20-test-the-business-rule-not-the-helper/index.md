@@ -1,6 +1,6 @@
 ---
 draft: false
-title: "Test the Business Rule, Not the Helper: Why Black-Box Testing Shines in Event-Sourced Systems"
+title: "Assert on What Happened, Not on Who Was Called: Black-Box Testing in Event-Sourced Systems"
 date: 2026-07-20
 authors:
   - kersten
@@ -9,172 +9,273 @@ categories:
 tags:
   - testing
   - black-box testing
-  - business rules
+  - mocking
+  - command handler
   - event sourcing
-  - software design
 slug: test-the-business-rule-not-the-helper
 ---
 
-# Test the Business Rule, Not the Helper: Why Black-Box Testing Shines in Event-Sourced Systems
+# Assert on What Happened, Not on Who Was Called: Black-Box Testing in Event-Sourced Systems
 
-Every codebase has them. Helper functions that started as a few lines of conditional logic and grew into something that crosses a screen of code, threading through thresholds, cutoff dates, and a handful of sealed-class branches. They look important, complex enough that skipping tests on them feels irresponsible. The instinct to wrap them in their own dedicated unit tests is almost automatic.
+Every codebase has a function like the one I am about to show you. It started as three lines of conditional logic, then a regulation changed, then a second product type arrived, and now it crosses half a screen. It looks important. Skipping tests on it would feel irresponsible, so it gets a test class of its own, almost without thinking.
 
-This article is about that instinct, and why following it tends to produce worse tests than the alternative. The alternative is black-box testing: asserting on the business outcome a system produces, not the return value of the helper inside it. Most teams agree with black-box testing in principle and quietly abandon it in practice, usually for rational reasons that have nothing to do with discipline.
-
-We'll look at the reasons, then at one architecture where those reasons stop applying. The architecture is event sourcing. The lesson is not "use event sourcing." The lesson is what becomes possible when the boundary between input and output is something you can hold in your hand.
+That reflex is usually explained by complexity, and that explanation is wrong. What decides whether you end up writing white-box tests is not how complicated your code is. It is whether the business outcome exists anywhere as a value you can point at. This article follows one rule from the inside of a helper to the outside of a system to show you the difference, and event sourcing turns out to matter for a reason that has nothing to do with fashion.
 
 <!-- more -->
 
-## The Helper That Begs for Tests
+## A Rule Worth Testing
 
-To make this concrete, take a function that decides whether a loan application carries enough risk to require a cosigner. It lives in a bank backend, because banks have rules with the right shape: numeric thresholds, regulatory cutoff dates, and a handful of loan types that behave differently from one another. Call it `anyHighRiskAutoLoan(LoanRequest request)`, and have it return a boolean.
+Take a function that decides whether a loan application needs a cosigner. Banks are a good source of rules with the right shape, because they combine numeric thresholds, regulatory cutoff dates, and product types that each behave a little differently. Call it `isHighRiskAutoLoan(Loan loan)` and have it return a boolean. The whole rule fits on one screen, which is exactly what makes it tempting.
 
-The body of that method is not trivial. It walks the request's loans, filters to auto loans, and for each one checks whether the principal amount exceeds 50,000 EUR. If it does, it then checks whether the contract date falls after January 1st, 2024, because the regulation that introduced this check only applies to contracts signed after that date. Then it looks at the loan type, because `Loan.Refinance` and `Loan.Restructuring` follow slightly different rules than `Loan.Conventional`. Any matching loan makes the entire predicate true.
+A short detour through the vocabulary first, because not everyone works in lending and the rule is unreadable without it. A **cosigner** is a second person who guarantees the loan and becomes liable if the borrower stops paying, so requiring one is the bank's way of accepting a risk it would otherwise decline. The **principal** is the money actually borrowed, before any interest. The three loan types in the code are three different situations a customer can be in: a **conventional** loan is new money, a **refinance** replaces an existing loan with a fresh one, and a **restructuring** keeps the loan but renegotiates the repayment schedule.
 
-You can almost feel the testing pressure rising as you read that. The logic has at least six independent dimensions you could vary in tests: amount, date, type, count, mix, edge values at the threshold. The code is complex enough that you would want a safety net. Six dimensions usually means twenty to thirty test cases before you sleep well.
+Those three situations carry different numbers, which is why the rule cannot simply read one field and compare it. A conventional loan has a single principal. A refinance has two of them, the one being paid off and the one being taken on, and the bank cares about both. A restructuring has neither, because nothing is being borrowed; what exists is a schedule, so the interesting figure is the size of the individual instalments.
 
-So the natural question becomes: what do you test? The shape of the helper suggests testing the helper. Six dimensions, three loan types, two boolean returns: the targets look obvious, and so do the assertions. The question worth pushing on is a different one: what is this helper actually for, and what does the caller do with the boolean it returns?
+```java
+static boolean isHighRiskAutoLoan(Loan loan) {
+    if (loan.kind() != LoanKind.AUTO) {
+        return false;
+    }
 
-## What the Tests Look Like When You Give In
+    boolean exceedsThreshold = switch (loan) {
+        case Loan.Conventional c -> c.principal().compareTo(THRESHOLD) > 0;
+        case Loan.Refinance r -> r.currentPrincipal().compareTo(THRESHOLD) > 0
+                || r.plannedPrincipal().compareTo(THRESHOLD) > 0;
+        case Loan.Restructuring s -> s.instalments().stream()
+                .anyMatch(instalment -> instalment.compareTo(THRESHOLD) > 0);
+    };
 
-The first thing you write looks reasonable. A test class named `AnyHighRiskAutoLoanTest`, a handful of `@Test` methods, each constructing a `LoanRequest` and asserting `true` or `false`: a test for the threshold above 50,000 EUR, another for the threshold at exactly 50,000 EUR, one for the cutoff date and one for the day before it. Six dimensions, twenty cases. Coverage looks complete.
+    if (!exceedsThreshold) {
+        return false;
+    }
+    if (loan instanceof Loan.Restructuring) {
+        return true;
+    }
+    return loan.contractDate().isAfter(LocalDate.of(2023, 12, 31));
+}
+```
 
-Then you sit back and ask yourself what these tests actually prove. They prove that `anyHighRiskAutoLoan(...)` returns the expected boolean for the expected inputs. That is, strictly, what the tests assert. Anything beyond that is invisible to this test suite: whether the function is called, whether its result is used correctly, whether the resulting `CosignerRequired` field actually becomes mandatory in the user interface.
+You can see all three shapes in the switch. The conventional case is one comparison, the refinance case is two joined by an or, and the restructuring case walks a list and asks whether any element crosses the line. Three branches, three different meanings of the same threshold, and none of them reducible to the others.
 
-The system has at least three layers beyond the helper: the **[command handler](../../../../reference/extension_points/command_handler/index.md)** that consumes a `SubmitLoan` command and decides what events to emit, the precondition that wires the helper's boolean to the visibility of the cosigner field, and the role check that decides whether the applicant or the underwriter has write access to that field. None of those are covered by helper tests.
+Then there is the cutoff date, because the regulation that introduced this check applies only to contracts signed from 2024 onward. Restructurings are exempt from that date entirely, which is the kind of carve-out that regulations produce and developers inherit. You can count the test cases straight off the code: three loan types, three positions around the threshold, three around the cutoff, minus the combinations the exemption removes. That lands somewhere between twenty and thirty cases before you sleep well at night.
 
-If you ship a refactor that accidentally disconnects the helper from its caller, every test in `AnyHighRiskAutoLoanTest` still passes. **The helper is correct in isolation. The system is silently broken.** This is the structural deficiency of helper tests, and it does not disappear because the helper is complex.
+## So You Test It
 
-## Same Inputs, Different Boundary
-
-Now write the same tests at a different layer, using the same `LoanRequest` inputs, the same dimensions, and just as many cases. The difference is where the assertion lands. Instead of calling the helper directly, the test submits a command to the system (the same command a user would submit through the UI) and asserts on what the system does in response.
-
-In an **[event-sourced architecture](../../../../concepts/event_sourcing/index.md)**, the system reacts to commands by emitting events. A loan application that triggers the high-risk rule produces a `CosignerRequiredEvent`. A loan application that does not produces a different event or none at all. Both outcomes are observable as in-memory data, so the test can assert on them directly.
+Testing this is the easy part, and that is worth saying out loud before anything else. A `Loan` goes in, a boolean comes out, and nothing in between touches a database, a queue, or a clock. You write `HighRiskAutoLoanTest`, you give it twenty methods, and every one of them is three lines long. No infrastructure, no setup, no doubles.
 
 ```java
 @Test
-void requires_a_cosigner_when_auto_loan_exceeds_50000_eur_after_cutoff() {
-    fixture.given().nothing()
-        .when(new SubmitLoanCommand(
-            new Loan.Conventional(
-                LoanKind.AUTO,
-                BigDecimal.valueOf(50_001),
-                LocalDate.of(2024, 1, 2)
-            )
-        ))
-        .succeeds()
-        .allEvents().any(e -> e.ofType(CosignerRequiredEvent.class));
+void conventional_auto_loan_above_the_threshold_is_high_risk() {
+    var loan = conventionalAutoLoan(BigDecimal.valueOf(50_001), LocalDate.of(2024, 1, 2));
+
+    assertThat(isHighRiskAutoLoan(loan)).isTrue();
 }
 
 @Test
-void does_not_require_a_cosigner_when_auto_loan_is_at_threshold() {
-    fixture.given().nothing()
-        .when(new SubmitLoanCommand(
-            new Loan.Conventional(
-                LoanKind.AUTO,
-                BigDecimal.valueOf(50_000),
-                LocalDate.of(2024, 1, 2)
-            )
-        ))
+void conventional_auto_loan_exactly_at_the_threshold_is_not() {
+    var loan = conventionalAutoLoan(BigDecimal.valueOf(50_000), LocalDate.of(2024, 1, 2));
+
+    assertThat(isHighRiskAutoLoan(loan)).isFalse();
+}
+```
+
+Twenty cases later the suite is green and the coverage report agrees with you. Now ask what those tests actually prove. They prove that `isHighRiskAutoLoan(...)` returns the right boolean for the inputs you handed it, which is a real thing to know and a smaller thing than it feels like. They say nothing about whether anyone calls the function, whether the result is used the right way around, or whether a cosigner requirement ever reaches the applicant.
+
+There are at least three layers between this boolean and the person filling out the form. A command handler takes the submission and decides what happens next. A precondition ties the boolean to whether the cosigner field appears at all. A role check governs who may write into that field once it does. Ship a refactoring that quietly disconnects the rule from its caller and every test in `HighRiskAutoLoanTest` still passes, because **the helper is correct in isolation while the system is silently broken.**
+
+## Then You Open the Caller
+
+So you decide to test the caller as well, which is the obvious next move and the reason this article exists. In a layered backend the caller is a service method, and it does the sort of thing service methods do. It loads the applicant, persists the application, and then branches on the rule.
+
+```java
+public void submitLoan(LoanRequest request) {
+    var applicant = applicantRepository.find(request.applicantId())
+            .orElseThrow(() -> new NoSuchApplicantException(request.applicantId()));
+
+    applicationRepository.save(new LoanApplication(request));
+
+    if (isHighRiskAutoLoan(request.loan())) {
+        cosignerService.require(applicant, request);
+        underwritingService.assignReviewer(request);
+    } else {
+        approvalService.approve(request);
+    }
+}
+```
+
+Look at the signature again. It returns `void`. You came here to assert that a high-risk application requires a cosigner, and there is nothing to assert on, because the sentence "this application requires a cosigner" is not data anywhere in this design. It exists as the fact that a particular method was called on a particular service, and nowhere else.
+
+So you reach for Mockito, and you do it without thinking, the same way you wrote the helper test without thinking. There is no decision being made here. There is nothing else in the room to reach for.
+
+```java
+@Test
+void requires_a_cosigner_when_auto_loan_exceeds_the_threshold_after_the_cutoff() {
+    when(applicantRepository.find(applicantId)).thenReturn(Optional.of(applicant));
+
+    service.submitLoan(new LoanRequest(applicantId,
+            conventionalAutoLoan(BigDecimal.valueOf(50_001), LocalDate.of(2024, 1, 2))));
+
+    verify(cosignerService).require(eq(applicant), any());
+    verifyNoInteractions(approvalService);
+}
+```
+
+The name of that test is a business requirement. The assertion underneath it is not. `verify(cosignerService).require(...)` claims that a method with that name was invoked on a service of that type, which is a claim about the shape of your code rather than about what the system did. Rename `require` to `requireFor` and the test goes red while the behavior stays identical. Move the branch into a different service and it goes red again.
+
+That is the whole point, and it is worth being precise about it. The helper test was white-box because you chose it. This one is white-box **by construction**, because the design offers no value to assert on and a claim about calls is the only claim available. Which brings back the pressure you felt reading the rule at the top: it never came from the complexity. `isHighRiskAutoLoan(...)` is the most intricate code in either listing and the easiest thing in either one to test at any level you like, while the eight trivial lines of orchestration around it are the part that resists testing.
+
+## The Same Rule, One Layer Up
+
+Now put the same rule into a command handler and change nothing about the logic. The branch is still there, the helper is still called from it, and the two outcomes are still the two outcomes. What changes is what the branch reaches for when it has decided.
+
+```java
+@CommandHandling
+public void submitLoan(
+        Applicant applicant,
+        SubmitLoanCommand command,
+        CommandEventPublisher<Applicant> publisher) {
+    if (isHighRiskAutoLoan(command.loan())) {
+        publisher.publish(new CosignerRequiredEvent(command.applicantId()));
+    } else {
+        publisher.publish(new LoanApprovedEvent(command.applicantId()));
+    }
+}
+```
+
+Requiring a cosigner is no longer something the handler does to a service. It is something the handler states, as a record, and the record contains the whole outcome. That distinction is finer than it looks, because `publisher.publish(...)` is structurally the same outward call as `cosignerService.require(...)` was. The difference lives in the argument: `CosignerRequiredEvent` is the complete business outcome expressed as data, while `require(applicant, request)` is an instruction whose meaning only materializes inside the thing you called.
+
+Because the outcome is data, the test can read it. The fixture replays whatever happened before, runs the command, and hands you the events that came out.
+
+```java
+@Test
+void requires_a_cosigner_when_auto_loan_exceeds_the_threshold_after_the_cutoff() {
+    fixture.given()
+        .events(new ApplicantOnboardedEvent(applicantId, "creditworthy"))
+        .when(new SubmitLoanCommand(applicantId,
+            conventionalAutoLoan(BigDecimal.valueOf(50_001), LocalDate.of(2024, 1, 2))))
+        .succeeds()
+        .allEvents().single(e -> e.ofType(CosignerRequiredEvent.class));
+}
+
+@Test
+void does_not_require_a_cosigner_at_exactly_the_threshold() {
+    fixture.given()
+        .events(new ApplicantOnboardedEvent(applicantId, "creditworthy"))
+        .when(new SubmitLoanCommand(applicantId,
+            conventionalAutoLoan(BigDecimal.valueOf(50_000), LocalDate.of(2024, 1, 2))))
         .succeeds()
         .allEvents().none(e -> e.ofType(CosignerRequiredEvent.class));
 }
 ```
 
-Read those two tests again and ask what they verify. They cover the helper's logic, the command handler's call site, the precondition wiring, and the event payload that lands in front of the assertion. That's four layers covered with the same number of cases, in fewer lines of code than the helper test needed. The white-box helper test covered only one of those four layers.
+The loan expression in those tests is the one from the Mockito test, unchanged. Same input, same dimensions, same number of cases. Only the assertion moved, and the two versions of it are worth putting side by side, because everything in this article sits in the difference between these two lines.
 
-The structural difference is best seen visually. A helper test is a short rope between two points: the input you craft, the output you assert. A black-box test is a longer rope that wraps around more of the system before tying off. That picture is worth holding onto. It comes back later in the article.
+```java
+verify(cosignerService).require(eq(applicant), any());     // who was called
+.single(e -> e.ofType(CosignerRequiredEvent.class));       // what happened
+```
+
+The first line survives no restructuring of the code it describes. The second survives all of it. Rename the handler, inline the rule, split the class in two, move the branch: the claim still holds, because the claim was never about any of that in the first place.
 
 ```mermaid
 graph LR
-  subgraph WhiteBox["WHITE-BOX - helper test"]
-    T1[Test] --> H1[anyHighRiskAutoLoan]
-    H1 -->|returns boolean| A1[Assertion]
+  subgraph Interaction["INTERACTION ASSERTION"]
+    T1[Test] -->|calls| S[submitLoan]
+    S -->|calls| C[cosignerService]
+    C -.->|recorded call| A1[verify]
   end
-  subgraph BlackBox["BLACK-BOX - business-rule test"]
-    T2[Test] -->|command| F[Fixture]
-    F --> CH[Command Handler]
-    CH --> Helper[anyHighRiskAutoLoan]
-    Helper --> CH
-    CH -->|emits event| E[CosignerRequiredEvent]
+  subgraph Value["VALUE ASSERTION"]
+    T2[Test] -->|command| CH[Command Handler]
+    CH -->|emits| E[CosignerRequiredEvent]
     E --> A2[Assertion]
   end
 ```
 
-One asserts on a return value, the other on what the user-facing system actually does in response to the same input, and the second costs no more to write while proving strictly more.
+The dotted line in the upper half is the part that should bother you. Your assertion is not reading an output; it is reading a note that a test double took about being poked.
 
-??? info "Decoding the fluent fixture syntax"
-    Readers new to OpenCQRS may find the chained calls cryptic. `given().nothing()` declares no prior events. `.when(cmd)` runs the command. `.succeeds().allEvents().any(predicate)` asserts the command did not throw and that at least one captured event matches the predicate.
+## What a Value Assertion Can Do That a Call Assertion Cannot
 
-## Why This Becomes Cheap in This Architecture
+Two things follow from asserting on a value, and both of them are easy to walk past. The first is that a value assertion can be complete. `verify(a)` followed by `verify(b)` checks the two things you remembered to check, and an unwanted call to `underwritingService.assignReviewer(...)` in the wrong branch sails through, because no test asked about it. Mockito offers `verifyNoMoreInteractions` for exactly this, and in practice it is opt-in, breaks whenever anything unrelated is added, and gets deleted the first time it is inconvenient.
 
-If black-box tests are strictly better, why does anyone write helper tests at all? In most architectures, the answer is cost. To call a command handler in isolation, you usually have to construct a state to call it against, and constructing that state means setting up databases, repositories, mocks for external services, and a slice of the application context. The cheapest reasonable in-memory shortcut is some half-mocked variant that needs maintenance every time the layer below changes.
-
-So teams settle. They write helper tests because they fit in a single file with no infrastructure. They tell themselves the integration tests will catch the wiring issues, and sometimes the integration tests do, and sometimes the wiring issues ship to production because the integration tests cover the happy path. Each decision to settle is reasonable on its own. Stack enough of them up and the test suite stops making sense.
-
-Event-sourced architectures change the calculation. The boundary of a command handler is a small set of typed inputs (prior events and the new command) and a small set of typed outputs (new events, possibly a returned value). None of these require infrastructure. The fixture replays the prior events through **[state-rebuilding handlers](../../../../reference/extension_points/state_rebuilding_handler/index.md)** entirely in memory, runs the command, captures the emitted events, and lets you assert on them. The cost of a black-box test collapses to the cost of constructing a few records.
-
-Once that collapse happens, helper tests stop being defensible. They cost roughly the same to write and cover strictly less of the system. Worse, they produce test names that read like internal documentation rather than user behavior. **The architecture is doing the work that mocks and fixtures used to do, and it is doing it for free.**
-
-This isn't unique to event sourcing. Any architecture where the business-rule boundary can be expressed as pure data in and pure data out gets a version of this. Pure functional cores with imperative shells (1) get it. Hexagonal designs with disciplined ports get pieces of it. The reason event sourcing gets so much of it is that the architecture forces you to make the boundary explicit from day one: the events are the boundary, by construction.
-{ .annotate }
-
-1.  A design where pure business-logic functions are isolated from imperative I/O code. The pure core can be tested with simple inputs and outputs, much like a command handler in event sourcing. The surrounding shell handles persistence and external effects separately.
-
-## Your Test Names Are the Tell
-
-There is a quick diagnostic you can apply to any test suite today, regardless of which architecture it lives in. Look at the test names. Read them out loud. If the names sound like business requirements, such as "requires a cosigner when an auto loan exceeds 50,000 euro after the 2024 cutoff," you are writing black-box tests. If they sound like implementation notes, such as "testAnyHighRiskAutoLoanReturnsFalseAtThreshold," you are writing white-box tests.
-
-Both kinds of names have a place. The diagnostic only flags a problem when business-rule tests are mislabeled, which is what happens when you write helper tests for things that are not really helpers but business rules wearing a helper costume.
-
-The most useful side effect of business-rule names is that they survive refactors. If you rename `anyHighRiskAutoLoan` to `requiresCosignerForAutoLoan`, the helper-named tests have to be renamed in lockstep, or they start lying. The business-rule named tests do not move. The system still requires a cosigner when an auto loan exceeds 50,000 euro after the cutoff, regardless of what the function inside the system is called this quarter.
-
-??? note "When helper tests still earn their keep"
-    Not every helper is a business rule in disguise. Parsers, validators, formatters, and other utilities with their own intricate logic still benefit from direct tests: the test name `parsesIsoDateWithTrailingZulu` accurately describes what is being verified. The diagnostic flags a problem only when business outcomes are tested with helper-named tests, not when genuinely internal mechanics get their own coverage.
-
-You can use the diagnostic before you change anything. Open your most-complex test file and read three test names in a row. Ask yourself whether you could hand those three names to the person who wrote the business requirement and have them recognize their own work. If no, ask why: it might be the architecture making the right tests expensive, or it might just be habit, inertia, or a team decision that nobody has revisited in a while. The cause matters when you decide what to do about it; the architecture only sets the price, it does not write the tests for you.
-
-## A Look at the Framework That Makes This Natural
-
-For readers who have not seen **[OpenCQRS's test fixture](../../../../reference/test_support/command_handling_test_fixture/index.md)** before, the snippets earlier in this article may have looked unfamiliar. The fixture is a fluent DSL for testing command handlers in isolation: you describe the prior state in terms of events, submit a command, and assert on the outcome. The whole sequence is one chained expression that reads roughly like a Given-When-Then sentence written in Java.
+With events the emitted list is in your hands in its entirety, so completeness costs a single line. You can claim that one specific event came out and nothing else did, or that a particular kind of event did not occur at all, and neither claim requires you to have anticipated which wrong thing might happen.
 
 ```java
-fixture.given()
-    .events(new ApplicantOnboardedEvent(applicantId, "creditworthy"))
-    .when(new SubmitLoanCommand(applicantId, new Loan.Conventional(...)))
-    .succeeds()
-    .allEvents().any(e -> e.ofType(CosignerRequiredEvent.class));
+.allEvents().exactly(new CosignerRequiredEvent(applicantId));
 ```
 
-The DSL is not doing anything that could not be done with manual setup and assertions. It is doing what good DSLs do, which is making the natural test style cheaper to write than the unnatural one. Every chained method narrows the type (1) of what you can call next: setup methods return setup, the `when` call returns the outcome of the command, the success branch returns the assertion DSL, and so on. The shape of the test follows the shape of the business interaction. This is the long rope from the earlier diagram, spelled out as a sequence of types: each phase forces the next, so the chain cannot stop short of the actual outcome.
-{ .annotate }
+The second consequence is that nothing stands between the test and the real artifact. `verify` proves that a call reached the double you put in place of `CosignerService`, and the real implementation never runs, which sounds obvious until you follow it through. Suppose someone changes `CosignerService.require(...)` so the cosigner field is only made mandatory for natural persons, having misread a ticket about legal entities. The helper test stays green because the rule is untouched, the Mockito test stays green because the call still happens, and the business rule is now false for every company that applies.
 
-1.  This phase typing, where each phase of the interaction is modelled as its own type, is the central design choice of the test DSL and what makes the chain above the path of least resistance.
+Stubbing a return value does not close that gap; it widens it, because you then assert against your own hypothesis about what the service gives back. An event has no such gap. The record the test inspects is the record the system appends, built by the same code and replayed through the same state-rebuilding handlers, so the thing you assert on is the thing production produces.
 
-That fluency is not an accident of naming; it is the point of the design. The test API was built so that phases become types: `given()` hands back a setup type, `when()` narrows to the outcome of the command, and choosing `succeeds()` or `fails()` narrows again to the matching assertion surface. Transitions become method signatures, and illegal chains (setup after `when`, an assertion before you have committed to success or failure) simply do not compile. The effect is that the type system pushes developers toward business-rule tests and away from accidental helper tests: the natural chain to write is the one that submits a command and asserts on the emitted events.
+The fixture leans into this with deliberately strict assertion verbs. `single()` means there was exactly one event and it matched, `once()` means exactly one match in a stream of any length, `every()` and `any()` and `none()` mean what they say, and `exactly()` compares the whole emitted stream against a list of payloads. Those names were chosen so that a test with a business-requirement name gets an assertion that reads as the outcome you meant, rather than as a lookup into a framework manual.
 
-That naming discipline runs one level deeper than the chain's structure, into the vocabulary of the assertions themselves. The fixture's terminal assertions are named for what a requirement would claim, not for how the check is implemented: `single()` asserts that there is exactly one event and that it matches, `once()` that exactly one event in a stream of any length matches, `every()` that all of them match, `any()` that at least one does, and `none()` that none do. Those verbs were made deliberately strict: `single` reads as "only one" the way it does in Kotlin's standard library or AssertJ, and the DSL honours that expectation rather than quietly redefining it. A method name is a contract with the reader, and that contract does not stop at the test's own name: the assertion you chain onto it should read as the outcome you meant, so the whole line (not just its label) states a business fact.
+## Why This Stays Cheap
 
-If your stack is something other than OpenCQRS, don't read this as a pitch to switch frameworks. Read it as a prompt to calibrate your taste: this is the kind of fluency a test tool can offer when the architecture supports it. Whether your stack offers something similar is the question worth asking after you finish reading.
+If black-box tests are better, the obvious question is why anyone writes helper tests at all, and the honest answer is cost. Look back at `submitLoan` and count the bill: one stubbed repository going in, three verified services coming out, and every one of those doubles has to be maintained as the layer beneath it changes. The cheapest in-memory alternative is a half-mocked variant that drifts a little further from production with each release.
+
+So teams settle, and each individual act of settling is reasonable. Helper tests fit in one file and need no infrastructure at all. The integration tests will catch the wiring, people say, and sometimes the integration tests do catch it, and sometimes the wiring ships broken because those tests only walk the happy path. Stack enough reasonable decisions on top of each other and the suite stops meaning anything.
+
+Event sourcing changes the arithmetic rather than the argument. A command handler takes typed inputs, namely the prior events and a command, and produces typed outputs, namely new events and possibly a return value. None of that needs infrastructure, so the fixture replays the prior events in memory, runs the handler, and captures what came out. A black-box test now costs roughly what constructing a few records costs.
+
+This property is not exclusive to event sourcing, and pretending otherwise would be a cheap sell. Any design where the business rule sits between plain data in and plain data out gets a version of it, and a functional core with an imperative shell gets most of it. The difference is that those designs *permit* the property while event sourcing *enforces* it, because there is no way to express an effect other than as an event, so it cannot quietly decay the week somebody is in a hurry.
+
+## The Given Makes You Learn the Process
+
+Everything so far has been about the assertion, and there is a second difference hiding in the setup. To write the fixture test you had to produce this line: `given().events(new ApplicantOnboardedEvent(applicantId, "creditworthy"))`. That line demands that you know which facts must already be true before the rule can apply, and it demands them in the vocabulary of the domain rather than of your code.
+
+The mock version demands nothing of the kind. `when(applicantRepository.find(id)).thenReturn(applicant)` puts a state into the world by fiat, and whether the system could ever have arrived at that state is not the test's problem and never becomes anyone's problem. You can write that line knowing a repository signature and nothing whatsoever about how a loan application comes to exist. It will pass, and it will keep passing, and it will teach you nothing.
+
+I want to concede the obvious objection before someone raises it, because it is a fair one. Both setups are fabricated, and a prior event stream is no more real than a stubbed repository. The asymmetry is not about realism; it is about what each fabrication asks of the person writing it. One asks for a sequence of domain facts, the other asks for a return type.
+
+That gives you a diagnostic you can run this afternoon without changing a line of code. Take a business rule your team owns and try to write down the events that must have happened before it applies. Either it comes out fluently and you know your process, or you have to go ask a colleague and the test just found a knowledge gap at your desk rather than in production, or nobody on the team can name the events at all, which is a modeling problem the test merely surfaced. The effort is real, and it is worth noting that you pay it once per process while you work out what the prelude is, not once per test case afterward.
+
+## Every Handler Is Such a Boundary
+
+The strongest objection to everything above is that real processes are not one method call. A loan application moves through creditworthiness checks, underwriting, escalation, and approval, and testing each step in isolation is exactly the trap that mock-heavy suites fall into. If your tests verify each step against a fabricated neighbor, they verify nothing about the process that connects them.
+
+That objection lands hard against layered code and glances off event sourcing, and the reason is worth spelling out. Each handler in the chain is a boundary of the same kind: prior events in, new events out, outcome as a value. Handler A emits an event, handler B declares that event in its `given`, and the seam between them is a typed record that A genuinely produces rather than an interface you invented for the convenience of a test.
+
+```mermaid
+graph LR
+  C1[SubmitLoan] --> H1[Handler A]
+  H1 -->|CosignerRequiredEvent| R{routing}
+  R --> C2[AssignUnderwriter]
+  C2 --> H2[Handler B]
+  H2 -->|UnderwriterAssignedEvent| Out[…]
+```
+
+Two honest residues remain, and I would rather name them than let a careful reader find them. The first is that nothing checks that A really emits what B's `given` assumes. You share the type, which is already more than a mock offers you, but whether A ever emits that event, and with which subject, is a question neither test asks. The second is that the thing routing one handler's event into the next command is itself a component, and neither handler test covers it.
+
+Both residues point at the same remedy rather than at a hole in the argument. The routing component has its own boundary, with its own inputs and its own observable output, so it gets tested the same way everything else here does. A five-step process is five places where the outcome exists as a value, which makes the property scale with the process instead of breaking on it.
+
+## Where White-Box Tests Keep Their Place
+
+None of this makes helper tests wrong, and I want to be blunt about that, because the argument is easy to over-apply. Those twenty to thirty threshold and cutoff combinations do not belong at the command boundary. Twenty-five of them would re-verify identical wiring with the same prelude copied above each one, which is noise dressed up as thoroughness. Extract the rule into its own small service and test it directly.
+
+```java
+@Test void conventional_auto_loans_above_50000_eur_are_high_risk() { ... }
+@Test void contracts_signed_before_the_2024_cutoff_are_never_high_risk() { ... }
+@Test void restructurings_ignore_the_cutoff_date_entirely() { ... }
+```
+
+Those names are business requirements, sitting on isolated unit tests of a boolean function, which closes off a shortcut worth naming. You cannot tell a white-box test from a black-box test by reading its name. Names tell you whether the author was thinking in requirements or in implementation, which is worth knowing and is a considerably smaller claim than the one people usually make with it.
+
+The division of labor follows from that. Isolated tests carry the combinatorics, and three or four black-box tests carry the thing the isolated ones structurally cannot show, namely that the rule is connected to the system and that connecting it has consequences. Let the real rule run in those three or four, rather than substituting it for a fixed answer. It is a pure function with no dependencies, so running it costs nothing, and a test that decides the outcome up front is no longer testing the connection you wrote it for.
+
+Genuinely internal mechanics keep their own tests without any of this applying to them. A parser, a formatter, a validator with intricate rules of its own: `parsesIsoDateWithTrailingZulu` says exactly what it verifies, and no outcome-level test says it better.
+
+## What This Doesn't Buy You
+
+The contract documents, the notification mail, the reporting call: none of that vanished when `cosignerService.require(...)` became `CosignerRequiredEvent`. Those effects moved into handlers and projections that react to the event, which is why the command handler test is clean. The effects were pushed out of the unit under test, not out of the system.
+
+Which means those handlers need tests of their own, and this is where the argument gives something back. Testing the handler that sends the approval mail means putting a double in front of the mail gateway and verifying that it was called, because at that boundary a call really is the outcome and `verify` is the honest assertion. The technique you just spent an article learning to avoid is the right technique one layer out.
+
+So the accounting is straightforward and not entirely free. One weak test became two strong ones, and the second one still has to be written. What you gained is that each of them now sits at a boundary where the thing it claims is the thing that happens.
 
 ## Where This Leaves You
 
-Strip away the event-sourcing specifics and a few recommendations survive. Find the boundary in your architecture where the business outcome is observable, the point where what the user wanted to happen has either happened or not. Test at that boundary. Do not test below it, even when something below it looks complex enough to want its own tests.
+Strip away the event sourcing and a short instruction survives. Find the point in your architecture where the business outcome exists as a value, the point where what the user wanted has either happened or not happened, and put your assertions there. Do not put them below it because the code below looks complicated, and do not put them below it because the code above is inconvenient to reach.
 
-If testing at that boundary is genuinely expensive in your architecture, do not just give up and write helper tests anyway. **Treat the expense as information.** Ask what makes it expensive (infrastructure, coupling, side effects in places they should not be) and ask whether you can change those things instead of changing your test strategy. A test suite is a downstream symptom of architectural choices. Trying to fix it without addressing the architecture rarely lasts.
+If the outcome exists as a value nowhere, and the only evidence that something happened is that a method was called, you have learned something about the design rather than about your test suite. That is not a gap to paper over with better mocks. A test suite is a downstream symptom of architectural choices, and treating the symptom rarely holds for long.
 
-??? warning "Beware the false economy of helper tests"
-    The disconnected-helper scenario from earlier scales linearly with your test suite: swap one `AnyHighRiskAutoLoanTest` for a hundred helper tests across as many business rules, and the result is a hundred green lights that all mean the same thing: nothing about whether the system does what it's supposed to. That's the false economy: the tests cost less to write, but what they buy you is confidence, not correctness. The first refactor that exposes the gap usually does so in production.
-
-Inside event sourcing, the cheap-boundary property is not a happy accident of any particular framework. It is the natural consequence of treating commands as the way change enters the system and events as the way it leaves. Frameworks like OpenCQRS make that consequence ergonomic, but the consequence exists with or without a particular framework. If your event-sourced project is still writing helper tests for business rules, the question is not whether the framework is helping you: it is whether you are letting it.
-
-The natural follow-up, regardless of architecture, is how this kind of testing actually works mechanically without spinning up an event store. The fixture obviously cannot connect to a real database for every assertion. The cost would defeat the entire argument. The answer is a mechanism called the **[`StateRebuildingHandlerDefinition`](../../../../reference/extension_points/state_rebuilding_handler/index.md)**, which lets the fixture replay events through in-memory reducers to reconstruct state on demand. That mechanism deserves a closer look of its own.
-
-*[black-box testing]: A testing approach that asserts on a system's observable outcomes rather than the internal implementation details that produce them.
-*[white-box testing]: A testing approach that asserts on the return values or internal state of specific functions, with knowledge of how they are implemented.
-*[fluent DSL]: An API style where method calls chain into a sentence-like sequence, with each return type narrowing what can be called next.
-*[Given-When-Then]: A test structure that separates setup (given), action (when), and assertion (then) into distinct phases.
-*[command handler]: An OpenCQRS extension point that consumes a command and emits events in response, encoding the business decision logic.
-*[event-sourced architecture]: An architectural style where state changes are captured as an append-only log of events, and current state is derived by replaying that log.
-*[state-rebuilding handlers]: OpenCQRS extension points that apply events to a state representation - in-memory reducers used by the test fixture to reconstruct state without an event store.
-*[StateRebuildingHandlerDefinition]: The OpenCQRS construct that pairs a state type with the handlers that reduce events into it, used by the test fixture to reconstruct state in memory.
+There is one mechanical question left open by all of this, and it is a fair one to ask. The fixture in these examples never opened a database, never started a container, and still reconstructed enough state to run a command handler against it. That works because of a construct called the `StateRebuildingHandlerDefinition`, which replays events through in-memory reducers to rebuild an instance on demand, and it deserves an article of its own.
