@@ -1,7 +1,7 @@
 ---
 draft: false
 title: "Assert on What Happened, Not on Who Was Called: Black-Box Testing in Event-Sourced Systems"
-date: 2026-07-20
+date: 2026-09-08
 authors:
   - kersten
 categories:
@@ -12,24 +12,24 @@ tags:
   - mocking
   - command handler
   - event sourcing
-slug: test-the-business-rule-not-the-helper
+slug: assert-on-what-happened-not-who-was-called
 ---
 
 # Assert on What Happened, Not on Who Was Called: Black-Box Testing in Event-Sourced Systems
 
-Every codebase has a function like the one I am about to show you. It started as three lines of conditional logic, then a regulation changed, then a second product type arrived, and now it crosses half a screen. It looks important. Skipping tests on it would feel irresponsible, so it gets a test class of its own, almost without thinking.
+Every codebase has a function like this one: It started as three lines of conditional logic, then a regulation changed, then a second product type arrived, and now it crosses half a screen. It looks important. Skipping tests on it would feel irresponsible, so it gets a test class of its own, almost without thinking.
 
-That reflex is usually explained by complexity, and that explanation is wrong. What decides whether you end up writing white-box tests is not how complicated your code is. It is whether the business outcome exists anywhere as a value you can point at. This article follows one rule from the inside of a helper to the outside of a system to show you the difference, and event sourcing turns out to matter for a reason that has nothing to do with fashion.
+That reflex is usually explained by complexity. That explanation is wrong. What decides whether you end up writing white-box tests is not how complicated your code is. It is whether the business outcome exists anywhere as a value you can point at. We'll follow one rule from the inside of a helper to the outside of a system, and event sourcing turns out to matter for a reason that has nothing to do with fashion.
 
 <!-- more -->
 
 ## A Rule Worth Testing
 
-Take a function that decides whether a loan application needs a cosigner. Banks are a good source of rules with the right shape, because they combine numeric thresholds, regulatory cutoff dates, and product types that each behave a little differently. Call it `isHighRiskAutoLoan(Loan loan)` and have it return a boolean. The whole rule fits on one screen, which is exactly what makes it tempting.
+Take a function that decides whether a loan application needs a cosigner. Banks are a good source of rules with the right shape, because they combine numeric thresholds, regulatory cutoff dates, and product types that each behave a little differently. Let's call this function `isHighRiskAutoLoan(Loan loan)` and have it return a boolean. The whole rule fits on one screen, which is exactly what makes it tempting.
 
 A short detour through the vocabulary first, because not everyone works in lending and the rule is unreadable without it. A **cosigner** is a second person who guarantees the loan and becomes liable if the borrower stops paying, so requiring one is the bank's way of accepting a risk it would otherwise decline. The **principal** is the money actually borrowed, before any interest. The three loan types in the code are three different situations a customer can be in: a **conventional** loan is new money, a **refinance** replaces an existing loan with a fresh one, and a **restructuring** keeps the loan but renegotiates the repayment schedule.
 
-Those three situations carry different numbers, which is why the rule cannot simply read one field and compare it. A conventional loan has a single principal. A refinance has two of them, the one being paid off and the one being taken on, and the bank cares about both. A restructuring has neither, because nothing is being borrowed; what exists is a schedule, so the interesting figure is the size of the individual instalments.
+Those three situations carry different numbers, which is why the rule cannot simply read one field and compare it. A conventional loan has a single principal. A refinance has two of them, the one being paid off and the one being taken on, and the bank cares about both. With a restructuring there is neither, because nothing is being borrowed; what exists is a schedule, so the interesting figure is the size of the individual instalments.
 
 ```java
 static boolean isHighRiskAutoLoan(Loan loan) {
@@ -64,7 +64,7 @@ Then there is the cutoff date, because the regulation that introduced this check
 
 ## So You Test It
 
-Testing this is the easy part, and that is worth saying out loud before anything else. A `Loan` goes in, a boolean comes out, and nothing in between touches a database, a queue, or a clock. You write `HighRiskAutoLoanTest`, you give it twenty methods, and every one of them is three lines long. No infrastructure, no setup, no doubles.
+Testing this is the easy part. A `Loan` goes in, a boolean comes out, and nothing in between touches a database, a queue, or a clock. You write `HighRiskAutoLoanTest`, you give it twenty methods, and every one of them is three lines long. No infrastructure, no setup, no doubles.
 
 ```java
 @Test
@@ -84,7 +84,7 @@ void conventional_auto_loan_exactly_at_the_threshold_is_not() {
 
 Twenty cases later the suite is green and the coverage report agrees with you. Now ask what those tests actually prove. They prove that `isHighRiskAutoLoan(...)` returns the right boolean for the inputs you handed it, which is a real thing to know and a smaller thing than it feels like. They say nothing about whether anyone calls the function, whether the result is used the right way around, or whether a cosigner requirement ever reaches the applicant.
 
-There are at least three layers between this boolean and the person filling out the form. A **[command handler](../../../../reference/extension_points/command_handler/index.md)** takes the submission and decides what happens next. A precondition ties the boolean to whether the cosigner field appears at all. A role check governs who may write into that field once it does. Ship a refactoring that quietly disconnects the rule from its caller and every test in `HighRiskAutoLoanTest` still passes, because **the helper is correct in isolation while the system is silently broken.**
+There are at least three layers between this boolean and the person filling out the form. The **[command handler](../../../../reference/extension_points/command_handler/index.md)** takes the submission and decides what happens next. Above it, a precondition ties the boolean to whether the cosigner field appears at all, and a role check governs who may write into that field once it does. Ship a refactoring that quietly disconnects the rule from its caller and every test in `HighRiskAutoLoanTest` still passes, because **the helper is correct in isolation while the system is silently broken.**
 
 ## Then You Open the Caller
 
@@ -108,7 +108,7 @@ public void submitLoan(LoanRequest request) {
 
 Look at the signature again. It returns `void`. You came here to assert that a high-risk application requires a cosigner, and there is nothing to assert on, because the sentence "this application requires a cosigner" is not data anywhere in this design. It exists as the fact that a particular method was called on a particular service, and nowhere else.
 
-So you reach for Mockito, and you do it without thinking, the same way you wrote the helper test without thinking. There is no decision being made here. There is nothing else in the room to reach for.
+So you reach for Mockito, and you do it without thinking, the same way you wrote the helper test without thinking. You are not choosing anything. There is nothing else in the room to reach for.
 
 ```java
 @Test
@@ -125,7 +125,7 @@ void requires_a_cosigner_when_auto_loan_exceeds_the_threshold_after_the_cutoff()
 
 The name of that test is a business requirement. The assertion underneath it is not. `verify(cosignerService).require(...)` claims that a method with that name was invoked on a service of that type, which is a claim about the shape of your code rather than about what the system did. Rename `require` to `requireFor` and the test goes red while the behavior stays identical. Move the branch into a different service and it goes red again.
 
-That is the whole point, and it is worth being precise about it. The helper test was white-box because you chose it. This one is white-box **by construction**, because the design offers no value to assert on and a claim about calls is the only claim available. Which brings back the pressure you felt reading the rule at the top: it never came from the complexity. `isHighRiskAutoLoan(...)` is the most intricate code in either listing and the easiest thing in either one to test at any level you like, while the eight trivial lines of orchestration around it are the part that resists testing.
+That is the whole point. The helper test was white-box because you chose it. This one is white-box **by construction**, because the design offers no value to assert on and a claim about calls is the only claim available. Which brings back the pressure you felt reading the rule at the top: it never came from the complexity. `isHighRiskAutoLoan(...)` is the most intricate code in either listing and the easiest thing in either one to test at any level you like, while the eight trivial lines of orchestration around it are the part that resists testing.
 
 ## The Same Rule, One Layer Up
 
@@ -152,12 +152,7 @@ cosignerService.require(applicant, request);               // an instruction
 publisher.publish(new CosignerRequiredEvent(applicantId)); // the outcome
 ```
 
-The difference lives entirely in the argument. `require(applicant, request)` passes an instruction, and what that instruction means happens inside the service you called. `CosignerRequiredEvent` is **the complete business outcome expressed as data**, which means nothing about the requirement lives anywhere else and nothing has to run for it to be true. Every advantage in the rest of this article is a consequence of that one line.
-
-??? info "Where did the underwriter assignment go?"
-    The layered version did two things in the high-risk branch. It required a cosigner and it assigned a reviewer. The handler above publishes one event and stops, because assigning the underwriter is now the job of a separate handler that reacts to `CosignerRequiredEvent`, along with anything else the bank wants to trigger from that fact.
-
-    Those handlers need tests of their own, and there a mock is the honest choice. Testing the one that notifies the underwriting team means putting a double in front of the notification gateway and verifying it was called, because at that boundary a call really is the outcome. The effects were pushed out of the unit under test, not out of the system.
+The difference lives entirely in the argument. `require(applicant, request)` passes an instruction, and what that instruction means happens inside the service you called. `CosignerRequiredEvent` is **the complete business outcome expressed as data**, which means nothing about the requirement lives anywhere else and nothing has to run for it to be true. Every advantage that follows is a consequence of that one line.
 
 ## Same Inputs, Different Assertion
 
@@ -185,7 +180,7 @@ void does_not_require_a_cosigner_at_exactly_the_threshold() {
 }
 ```
 
-The loan expression in those tests is the one from the Mockito test, unchanged. Same input, same dimensions, same number of cases. Only the assertion moved, and the two versions of it are worth putting side by side, because everything in this article sits in the difference between these two lines.
+The loan expression in those tests is the one from the Mockito test, unchanged. Same input, same dimensions, same number of cases. Only the assertion moved, and the two versions of it are worth putting side by side, because the difference between these two lines is the whole argument.
 
 ```java
 verify(cosignerService).require(eq(applicant), any());     // who was called
@@ -197,11 +192,17 @@ The first line survives no restructuring of the code it describes. The second su
 ```mermaid
 graph LR
   subgraph Interaction["INTERACTION ASSERTION"]
+    direction LR
     T1[Test] -->|calls| S[submitLoan]
     S -->|calls| C[cosignerService]
     C -.->|recorded call| A1[verify]
   end
+```
+
+```mermaid
+graph LR
   subgraph Value["VALUE ASSERTION"]
+    direction LR
     T2[Test] -->|command| CH[Command Handler]
     CH -->|emits| E[CosignerRequiredEvent]
     E --> A2[Assertion]
@@ -237,7 +238,7 @@ Stubbing a return value does not close that gap; it widens it, because you then 
 
     That is less alarming than it sounds. The test still describes history that genuinely exists in your store, which is more than a stubbed return value ever did. But if you rely on compilation failures to find every affected test, upcasting is where that reliance stops working.
 
-The fixture leans into this with deliberately strict assertion verbs. `single()` means there was exactly one event and it matched, `once()` means exactly one match in a stream of any length, `every()` and `any()` and `none()` mean what they say, and `exactly()` compares the whole emitted stream against a list of payloads. Those names were chosen so that a test with a business-requirement name gets an assertion that reads as the outcome you meant, rather than as a lookup into a framework manual.
+The fixture leans into this with deliberately strict assertion verbs. `single()` means there was exactly one event and it matched, `once()` means exactly one match in a stream of any length, `every()` and `any()` and `none()` mean what they say, and `exactly()` compares the whole emitted stream against a list of payloads. That vocabulary exists so that a test with a business-requirement name gets an assertion that reads as the outcome you meant, rather than as a lookup into a framework manual.
 
 ## Why This Stays Cheap
 
@@ -258,9 +259,9 @@ Everything so far has been about the assertion, and there is a second difference
 
 The mock version demands nothing of the kind. `when(applicantRepository.find(id)).thenReturn(applicant)` puts a state into the world by fiat, and whether the system could ever have arrived at that state is not the test's problem and never becomes anyone's problem. You can write that line knowing a repository signature and nothing whatsoever about how a loan application comes to exist. It will pass, and it will keep passing, and it will teach you nothing.
 
-I want to concede the obvious objection before someone raises it, because it is a fair one. Both setups are fabricated, and a prior event stream is no more real than a stubbed repository. The asymmetry is not about realism; it is about what each fabrication asks of the person writing it. One asks for a sequence of domain facts, the other asks for a return type.
+One objection is fair, and we should concede it before someone raises it. Both setups are fabricated, and a prior event stream is no more real than a stubbed repository. The asymmetry is not about realism; it is about what each fabrication asks of the person writing it. One asks for a sequence of domain facts, the other asks for a return type.
 
-That gives you a diagnostic you can run this afternoon without changing a line of code. Take a business rule your team owns and try to write down the events that must have happened before it applies. Either it comes out fluently and you know your process, or you have to go ask a colleague and the test just found a knowledge gap at your desk rather than in production, or nobody on the team can name the events at all, which is a modeling problem the test merely surfaced. The effort is real, and it is worth noting that you pay it once per process while you work out what the prelude is, not once per test case afterward.
+That gives you a diagnostic you can run this afternoon without changing a line of code. Take a business rule your team owns and try to write down the events that must have happened before it applies. Either it comes out fluently and you know your process, or you have to go ask a colleague and the test just found a knowledge gap at your desk rather than in production, or nobody on the team can name the events at all, which is a modeling problem the test merely surfaced. The effort is real, and you pay it once per process while you work out what the prelude is, not once per test case afterward.
 
 ## Every Handler Is Such a Boundary
 
@@ -277,7 +278,7 @@ graph LR
   H2 -->|UnderwriterAssignedEvent| Out[…]
 ```
 
-Two honest residues remain, and I would rather name them than let a careful reader find them. The first is that nothing checks that A really emits what B's `given` assumes. You share the type, which is already more than a mock offers you, but whether A ever emits that event, and with which subject, is a question neither test asks. The second is that the thing routing one handler's event into the next command is itself a component, and neither handler test covers it.
+Two honest residues remain, and naming them beats letting a careful reader find them. The first is that nothing checks that A really emits what B's `given` assumes. You share the type, which is already more than a mock offers you, but whether A ever emits that event, and with which subject, is a question neither test asks. The second is that the thing routing one handler's event into the next command is itself a component, and neither handler test covers it.
 
 Both residues point at the same remedy rather than at a hole in the argument. The routing component has its own boundary, with its own inputs and its own observable output, so it gets tested the same way everything else here does. A five-step process is five places where the outcome exists as a value, which makes the property scale with the process instead of breaking on it.
 
@@ -288,7 +289,7 @@ Both residues point at the same remedy rather than at a hole in the argument. Th
 
 ## Where White-Box Tests Keep Their Place
 
-None of this makes helper tests wrong, and I want to be blunt about that, because the argument is easy to over-apply. Those twenty to thirty threshold and cutoff combinations do not belong at the command boundary. Twenty-five of them would re-verify identical wiring with the same prelude copied above each one, which is noise dressed up as thoroughness. Extract the rule into its own small service and test it directly.
+None of this makes helper tests wrong, and the argument is easy to over-apply. Those twenty to thirty threshold and cutoff combinations do not belong at the command boundary. Twenty-five of them would re-verify identical wiring with the same prelude copied above each one, which is noise dressed up as thoroughness. Extract the rule into its own small service and test it directly.
 
 ```java
 @Test void conventional_auto_loans_above_50000_eur_are_high_risk() { ... }
@@ -306,7 +307,7 @@ Strip away the event sourcing and a short instruction survives. Find the point i
 
 If the outcome exists as a value nowhere, and the only evidence that something happened is that a method was called, you have learned something about the design rather than about your test suite. That is not a gap to paper over with better mocks. A test suite is a downstream symptom of architectural choices, and treating the symptom rarely holds for long.
 
-There is one mechanical question left open by all of this, and it is a fair one to ask. The fixture in these examples never opened a database, never started a container, and still reconstructed enough state to run a command handler against it. That works because of a construct called the **[`StateRebuildingHandlerDefinition`](../../../../reference/extension_points/state_rebuilding_handler/index.md)**, which replays events through in-memory reducers to rebuild an instance on demand, and it deserves an article of its own.
+One mechanical question is left open by all of this. The fixture in these examples never opened a database, never started a container, and still reconstructed enough state to run a command handler against it. That works because of a construct called the **[`StateRebuildingHandlerDefinition`](../../../../reference/extension_points/state_rebuilding_handler/index.md)**, which replays events through in-memory reducers to rebuild an instance on demand, and it deserves an article of its own.
 
 *[black-box testing]: A testing approach that asserts on a system's observable outcomes rather than on the internal steps that produced them.
 *[white-box testing]: A testing approach that asserts on the return values or internal calls of specific functions, with knowledge of how they are implemented.
