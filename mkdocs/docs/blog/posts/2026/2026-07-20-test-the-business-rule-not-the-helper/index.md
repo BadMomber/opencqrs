@@ -55,7 +55,10 @@ static boolean isHighRiskAutoLoan(Loan loan) {
 }
 ```
 
-You can see all three shapes in the switch. The conventional case is one comparison, the refinance case is two joined by an or, and the restructuring case walks a list and asks whether any element crosses the line. Three branches, three different meanings of the same threshold, and none of them reducible to the others.
+You can see all three shapes in the switch. The conventional case is one comparison, the refinance case is two joined by an or, and the restructuring case walks a list and asks whether any element crosses the line. Three branches, three different meanings of the same threshold (1), and none of them reducible to the others.
+{ .annotate }
+
+1.  `THRESHOLD` is the 50,000 EUR limit the regulation sets, held as a constant so all three branches compare against the same figure. The tests further down use 50,000 and 50,001 to sit exactly on either side of it.
 
 Then there is the cutoff date, because the regulation that introduced this check applies only to contracts signed from 2024 onward. Restructurings are exempt from that date entirely, which is the kind of carve-out that regulations produce and developers inherit. You can count the test cases straight off the code: three loan types, three positions around the threshold, three around the cutoff, minus the combinations the exemption removes. That lands somewhere between twenty and thirty cases before you sleep well at night.
 
@@ -81,7 +84,7 @@ void conventional_auto_loan_exactly_at_the_threshold_is_not() {
 
 Twenty cases later the suite is green and the coverage report agrees with you. Now ask what those tests actually prove. They prove that `isHighRiskAutoLoan(...)` returns the right boolean for the inputs you handed it, which is a real thing to know and a smaller thing than it feels like. They say nothing about whether anyone calls the function, whether the result is used the right way around, or whether a cosigner requirement ever reaches the applicant.
 
-There are at least three layers between this boolean and the person filling out the form. A command handler takes the submission and decides what happens next. A precondition ties the boolean to whether the cosigner field appears at all. A role check governs who may write into that field once it does. Ship a refactoring that quietly disconnects the rule from its caller and every test in `HighRiskAutoLoanTest` still passes, because **the helper is correct in isolation while the system is silently broken.**
+There are at least three layers between this boolean and the person filling out the form. A **[command handler](../../../../reference/extension_points/command_handler/index.md)** takes the submission and decides what happens next. A precondition ties the boolean to whether the cosigner field appears at all. A role check governs who may write into that field once it does. Ship a refactoring that quietly disconnects the rule from its caller and every test in `HighRiskAutoLoanTest` still passes, because **the helper is correct in isolation while the system is silently broken.**
 
 ## Then You Open the Caller
 
@@ -126,7 +129,7 @@ That is the whole point, and it is worth being precise about it. The helper test
 
 ## The Same Rule, One Layer Up
 
-Now put the same rule into a command handler and change nothing about the logic. The branch is still there, the helper is still called from it, and the two outcomes are still the two outcomes. What changes is what the branch reaches for when it has decided.
+Now put the same rule into a **[command handler](../../../../reference/extension_points/command_handler/index.md)** and change nothing about the logic. The branch is still there, the helper is still called from it, and the two outcomes are still the two outcomes. What changes is what the branch reaches for when it has decided.
 
 ```java
 @CommandHandling
@@ -158,7 +161,7 @@ The difference lives entirely in the argument. `require(applicant, request)` pas
 
 ## Same Inputs, Different Assertion
 
-Because the outcome is data, the test can read it. The fixture replays whatever happened before, runs the command, and hands you the events that came out.
+Because the outcome is data, the test can read it. The **[test fixture](../../../../reference/test_support/command_handling_test_fixture/index.md)** replays whatever happened before, runs the command, and hands you the events that came out.
 
 ```java
 @Test
@@ -207,9 +210,17 @@ graph LR
 
 The dotted line in the upper half is the part that should bother you. Your assertion is not reading an output; it is reading a note that a test double took about being poked.
 
+??? info "Decoding the fluent fixture syntax"
+    If the chained calls above look cryptic, they read as a Given-When-Then sentence. `given().events(...)` declares the events that already happened, and `given().nothing()` is the variant for a fresh subject with no history.
+
+    `.when(command)` runs the command against the state rebuilt from those events. `.succeeds()` asserts that it did not throw and opens the assertion surface, where `.allEvents()` hands you everything the handler emitted. What you chain after that is one of the verbs discussed later in this article.
+
 ## What a Value Assertion Can Do That a Call Assertion Cannot
 
-Two things follow from asserting on a value, and both of them are easy to walk past. The first is that a value assertion can be complete. `verify(a)` followed by `verify(b)` checks the two things you remembered to check, and an unwanted call to `underwritingService.assignReviewer(...)` in the wrong branch sails through, because no test asked about it. Mockito offers `verifyNoMoreInteractions` for exactly this, and in practice it is opt-in, breaks whenever anything unrelated is added, and gets deleted the first time it is inconvenient.
+Two things follow from asserting on a value, and both of them are easy to walk past. The first is that a value assertion can be complete. `verify(a)` followed by `verify(b)` checks the two things you remembered to check, and an unwanted call to `underwritingService.assignReviewer(...)` in the wrong branch sails through, because no test asked about it. Mockito offers `verifyNoMoreInteractions` (1) for exactly this, and in practice it is opt-in, breaks whenever anything unrelated is added, and gets deleted the first time it is inconvenient.
+{ .annotate }
+
+1.  It fails the test if the double received any call you did not explicitly verify. Sound in theory, awkward in practice: every unrelated call added to the method under test breaks tests that were not about it, so teams tend to remove it rather than maintain it.
 
 With events the emitted list is in your hands in its entirety, so completeness costs a single line. You can claim that one specific event came out and nothing else did, or that a particular kind of event did not occur at all, and neither claim requires you to have anticipated which wrong thing might happen.
 
@@ -219,7 +230,12 @@ With events the emitted list is in your hands in its entirety, so completeness c
 
 The second consequence is that nothing stands between the test and the real artifact. `verify` proves that a call reached the double you put in place of `CosignerService`, and the real implementation never runs, which sounds obvious until you follow it through. Suppose someone changes `CosignerService.require(...)` so the cosigner field is only made mandatory for natural persons, having misread a ticket about legal entities. The helper test stays green because the rule is untouched, the Mockito test stays green because the call still happens, and the business rule is now false for every company that applies.
 
-Stubbing a return value does not close that gap; it widens it, because you then assert against your own hypothesis about what the service gives back. An event has no such gap. The record the test inspects is the record the system appends, built by the same code and replayed through the same state-rebuilding handlers, so the thing you assert on is the thing production produces.
+Stubbing a return value does not close that gap; it widens it, because you then assert against your own hypothesis about what the service gives back. An event has no such gap. The record the test inspects is the record the system appends, built by the same code and replayed through the same **[state-rebuilding handlers](../../../../reference/extension_points/state_rebuilding_handler/index.md)**, so the thing you assert on is the thing production produces.
+
+??? tip "What upcasting does to this guarantee"
+    The claim above has one qualification worth knowing. Once you introduce upcasters to migrate old event shapes forward, an outdated payload in a test is quietly upgraded on the way in, so changing an event no longer breaks the test automatically.
+
+    That is less alarming than it sounds. The test still describes history that genuinely exists in your store, which is more than a stubbed return value ever did. But if you rely on compilation failures to find every affected test, upcasting is where that reliance stops working.
 
 The fixture leans into this with deliberately strict assertion verbs. `single()` means there was exactly one event and it matched, `once()` means exactly one match in a stream of any length, `every()` and `any()` and `none()` mean what they say, and `exactly()` compares the whole emitted stream against a list of payloads. Those names were chosen so that a test with a business-requirement name gets an assertion that reads as the outcome you meant, rather than as a lookup into a framework manual.
 
@@ -229,9 +245,12 @@ If black-box tests are better, the obvious question is why anyone writes helper 
 
 So teams settle, and each individual act of settling is reasonable. Helper tests fit in one file and need no infrastructure at all. The integration tests will catch the wiring, people say, and sometimes the integration tests do catch it, and sometimes the wiring ships broken because those tests only walk the happy path. Stack enough reasonable decisions on top of each other and the suite stops meaning anything.
 
-Event sourcing changes the arithmetic rather than the argument. A command handler takes typed inputs, namely the prior events and a command, and produces typed outputs, namely new events and possibly a return value. None of that needs infrastructure, so the fixture replays the prior events in memory, runs the handler, and captures what came out. A black-box test now costs roughly what constructing a few records costs.
+**[Event sourcing](../../../../concepts/event_sourcing/index.md)** changes the arithmetic rather than the argument. A command handler takes typed inputs, namely the prior events and a command, and produces typed outputs, namely new events and possibly a return value. None of that needs infrastructure, so the fixture replays the prior events in memory, runs the handler, and captures what came out. A black-box test now costs roughly what constructing a few records costs.
 
-This property is not exclusive to event sourcing, and pretending otherwise would be a cheap sell. Any design where the business rule sits between plain data in and plain data out gets a version of it, and a functional core with an imperative shell gets most of it. The difference is that those designs *permit* the property while event sourcing *enforces* it, because there is no way to express an effect other than as an event, so it cannot quietly decay the week somebody is in a hurry.
+This property is not exclusive to event sourcing, and pretending otherwise would be a cheap sell. Any design where the business rule sits between plain data in and plain data out gets a version of it, and a functional core with an imperative shell (1) gets most of it. The difference is that those designs *permit* the property while event sourcing *enforces* it, because there is no way to express an effect other than as an event, so it cannot quietly decay the week somebody is in a hurry.
+{ .annotate }
+
+1.  A design that keeps pure business-logic functions separate from the code that talks to the outside world. The core takes data and returns data, while the surrounding shell deals with persistence, messaging, and everything else that has an effect.
 
 ## The Given Makes You Learn the Process
 
@@ -262,6 +281,11 @@ Two honest residues remain, and I would rather name them than let a careful read
 
 Both residues point at the same remedy rather than at a hole in the argument. The routing component has its own boundary, with its own inputs and its own observable output, so it gets tested the same way everything else here does. A five-step process is five places where the outcome exists as a value, which makes the property scale with the process instead of breaking on it.
 
+??? info "What the routing box in the diagram is"
+    The unlabeled node between the two handlers is whatever turns an event into the next command. Depending on which tradition you come from, that is called a process manager, a saga, or a policy, and the naming argument has outlasted several frameworks.
+
+    In OpenCQRS it is an ordinary **[event handler](../../../../reference/extension_points/event_handler/index.md)** rather than a separate extension point. It reacts to `CosignerRequiredEvent` and sends `AssignUnderwriter`, which means it takes an event and produces a command, and both of those are values you can put a test around.
+
 ## Where White-Box Tests Keep Their Place
 
 None of this makes helper tests wrong, and I want to be blunt about that, because the argument is easy to over-apply. Those twenty to thirty threshold and cutoff combinations do not belong at the command boundary. Twenty-five of them would re-verify identical wiring with the same prelude copied above each one, which is noise dressed up as thoroughness. Extract the rule into its own small service and test it directly.
@@ -282,4 +306,20 @@ Strip away the event sourcing and a short instruction survives. Find the point i
 
 If the outcome exists as a value nowhere, and the only evidence that something happened is that a method was called, you have learned something about the design rather than about your test suite. That is not a gap to paper over with better mocks. A test suite is a downstream symptom of architectural choices, and treating the symptom rarely holds for long.
 
-There is one mechanical question left open by all of this, and it is a fair one to ask. The fixture in these examples never opened a database, never started a container, and still reconstructed enough state to run a command handler against it. That works because of a construct called the `StateRebuildingHandlerDefinition`, which replays events through in-memory reducers to rebuild an instance on demand, and it deserves an article of its own.
+There is one mechanical question left open by all of this, and it is a fair one to ask. The fixture in these examples never opened a database, never started a container, and still reconstructed enough state to run a command handler against it. That works because of a construct called the **[`StateRebuildingHandlerDefinition`](../../../../reference/extension_points/state_rebuilding_handler/index.md)**, which replays events through in-memory reducers to rebuild an instance on demand, and it deserves an article of its own.
+
+*[black-box testing]: A testing approach that asserts on a system's observable outcomes rather than on the internal steps that produced them.
+*[white-box testing]: A testing approach that asserts on the return values or internal calls of specific functions, with knowledge of how they are implemented.
+*[interaction assertion]: An assertion that a particular method was invoked on a dependency, rather than an assertion about a value the system produced.
+*[value assertion]: An assertion about data the system produced, independent of which code path produced it.
+*[test double]: A stand-in object used in place of a real dependency during a test, such as a mock or a stub.
+*[command handler]: An OpenCQRS extension point that consumes a command and emits events in response, holding the business decision.
+*[event handler]: An OpenCQRS extension point that reacts to events, used for projections and for triggering follow-up commands.
+*[state-rebuilding handlers]: OpenCQRS extension points that fold events into a state representation, used by the test fixture to reconstruct an instance in memory.
+*[StateRebuildingHandlerDefinition]: The OpenCQRS construct pairing a state type with the handlers that reduce events into it.
+*[CommandEventPublisher]: The OpenCQRS interface a command handler uses to publish the events it decides on.
+*[Given-When-Then]: A test structure separating setup, action, and assertion into three distinct phases.
+*[fluent DSL]: An API style where calls chain into a sentence-like sequence, each return type narrowing what may be called next.
+*[cosigner]: A second person who guarantees a loan and becomes liable if the borrower stops paying.
+*[principal]: The amount of money actually borrowed, before interest.
+*[upcasters]: Components that migrate persisted events from an older shape to the current one while they are read.
