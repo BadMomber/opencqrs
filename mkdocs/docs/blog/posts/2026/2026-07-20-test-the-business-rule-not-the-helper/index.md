@@ -142,7 +142,21 @@ public void submitLoan(
 }
 ```
 
-Requiring a cosigner is no longer something the handler does to a service. It is something the handler states, as a record, and the record contains the whole outcome. That distinction is finer than it looks, because `publisher.publish(...)` is structurally the same outward call as `cosignerService.require(...)` was. The difference lives in the argument: `CosignerRequiredEvent` is the complete business outcome expressed as data, while `require(applicant, request)` is an instruction whose meaning only materializes inside the thing you called.
+Requiring a cosigner is no longer something the handler does to a service. It is something the handler states, as a record. That distinction is finer than it looks, because `publisher.publish(...)` is structurally the same outward call as `cosignerService.require(...)` was. Both hand something to a dependency, and neither gives you a return value to assert on.
+
+```java
+cosignerService.require(applicant, request);               // an instruction
+publisher.publish(new CosignerRequiredEvent(applicantId)); // the outcome
+```
+
+The difference lives entirely in the argument. `require(applicant, request)` passes an instruction, and what that instruction means happens inside the service you called. `CosignerRequiredEvent` is **the complete business outcome expressed as data**, which means nothing about the requirement lives anywhere else and nothing has to run for it to be true. Every advantage in the rest of this article is a consequence of that one line.
+
+??? info "Where did the underwriter assignment go?"
+    The layered version did two things in the high-risk branch. It required a cosigner and it assigned a reviewer. The handler above publishes one event and stops, because assigning the underwriter is now the job of a separate handler that reacts to `CosignerRequiredEvent`, along with anything else the bank wants to trigger from that fact.
+
+    Those handlers need tests of their own, and there a mock is the honest choice. Testing the one that notifies the underwriting team means putting a double in front of the notification gateway and verifying it was called, because at that boundary a call really is the outcome. The effects were pushed out of the unit under test, not out of the system.
+
+## Same Inputs, Different Assertion
 
 Because the outcome is data, the test can read it. The fixture replays whatever happened before, runs the command, and hands you the events that came out.
 
@@ -258,19 +272,9 @@ None of this makes helper tests wrong, and I want to be blunt about that, becaus
 @Test void restructurings_ignore_the_cutoff_date_entirely() { ... }
 ```
 
-Those names are business requirements, sitting on isolated unit tests of a boolean function, which closes off a shortcut worth naming. You cannot tell a white-box test from a black-box test by reading its name. Names tell you whether the author was thinking in requirements or in implementation, which is worth knowing and is a considerably smaller claim than the one people usually make with it.
-
-The division of labor follows from that. Isolated tests carry the combinatorics, and three or four black-box tests carry the thing the isolated ones structurally cannot show, namely that the rule is connected to the system and that connecting it has consequences. Let the real rule run in those three or four, rather than substituting it for a fixed answer. It is a pure function with no dependencies, so running it costs nothing, and a test that decides the outcome up front is no longer testing the connection you wrote it for.
+The division of labor is straightforward once the rule stands on its own. Isolated tests carry the combinatorics, and three or four black-box tests carry the thing the isolated ones structurally cannot show, namely that the rule is connected to the system and that connecting it has consequences. Let the real rule run in those three or four, rather than substituting it for a fixed answer. It is a pure function with no dependencies, so running it costs nothing, and a test that decides the outcome up front is no longer testing the connection you wrote it for.
 
 Genuinely internal mechanics keep their own tests without any of this applying to them. A parser, a formatter, a validator with intricate rules of its own: `parsesIsoDateWithTrailingZulu` says exactly what it verifies, and no outcome-level test says it better.
-
-## What This Doesn't Buy You
-
-The contract documents, the notification mail, the reporting call: none of that vanished when `cosignerService.require(...)` became `CosignerRequiredEvent`. Those effects moved into handlers and projections that react to the event, which is why the command handler test is clean. The effects were pushed out of the unit under test, not out of the system.
-
-Which means those handlers need tests of their own, and this is where the argument gives something back. Testing the handler that sends the approval mail means putting a double in front of the mail gateway and verifying that it was called, because at that boundary a call really is the outcome and `verify` is the honest assertion. The technique you just spent an article learning to avoid is the right technique one layer out.
-
-So the accounting is straightforward and not entirely free. One weak test became two strong ones, and the second one still has to be written. What you gained is that each of them now sits at a boundary where the thing it claims is the thing that happens.
 
 ## Where This Leaves You
 
