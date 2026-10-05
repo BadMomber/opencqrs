@@ -33,7 +33,7 @@ const baseArgs = {
   repo: '/r/src', diffFiles: '/r/files.txt', diffByFileDir: '/r/by-file', fullDiff: '/r/full.diff',
   reportsDir: '/r/reports', reviewFile: '/r/review.md', headSha: 'def', baseRef: 'upstream/main',
   label: 'PR #1 — x', title: 'x', date: '2026-01-01', goal: 'do x', ciStatus: 'qa: pass',
-  scenarioDir: '/r/scenarios', behindBase: 0, commits: 1, files: 2,
+  behindBase: 0, commits: 1, files: 2,
 }
 
 // Fake agents keyed by agentType / label. `fail` is a set of labels that return null.
@@ -51,10 +51,6 @@ function makeAgent({ fail = new Set() } = {}) {
         return { outputPath: out, errors: 1, warnings: 0, suggestions: 0 }
       case 'review-moderator':
         return { outputPath: out, confirmed: 1, singleConfirmed: 0, rejected: 0, dissent: 0 }
-      case 'review-scenario-designer':
-        return { outputPath: out, scenarios: [{ id: 'S1', name: 'no otel', promise: 'starts', needsEventStore: false }] }
-      case 'review-scenario-runner':
-        return { outputPath: out, results: [{ id: 'S1', verdict: 'holds', note: '' }] }
       default:
         if (opts.label === 'consolidate') return { reviewFile: baseArgs.reviewFile, verdict: 'blocked', blastRadius: 'wide', rows: [] }
         throw new Error(`unexpected agent ${opts.agentType} ${opts.label}`)
@@ -83,21 +79,19 @@ await test('missing args are rejected', async () => {
   assert(err && /ciStatus/.test(err.message), 'expected missing ciStatus error')
 })
 
-await test('full run: 12 reviewers, 4 moderators, 2 scenario agents, 1 consolidation, all on sonnet', async () => {
+await test('full run: 12 reviewers, 4 moderators, 1 consolidation, all on sonnet', async () => {
   const { agent, calls } = makeAgent()
   const r = await run(baseArgs, agent)
   const count = t => calls.filter(c => c.agentType === t).length
   for (const t of ['review-correctness', 'review-design', 'review-tests-docs', 'review-impact']) assert(count(t) === 3, `${t}: ${count(t)} instead of 3`)
   assert(count('review-moderator') === 4, 'four moderators')
-  assert(count('review-scenario-designer') === 1 && count('review-scenario-runner') === 1, 'scenario agents')
-  assert(calls.length === 19, `19 agents expected, got ${calls.length}`)
+  assert(calls.length === 17, `17 agents expected, got ${calls.length}`)
   assert(calls.every(c => c.model === 'sonnet'), 'every agent runs on sonnet')
   const entries = calls.filter(c => c.agentType === 'review-design').map(c => c.label).sort().join()
   assert(entries === 'design:build,design:prod,design:test', `entry points ${entries}`)
   const mod = calls.find(c => c.label === 'moderate:impact').prompt
-  assert(/SCENARIO_RUN=\/r\/reports\/scenario-run\.md/.test(mod), 'moderator gets the scenario run')
   assert(/impact-prod\.md[\s\S]*impact-test\.md[\s\S]*impact-build\.md/.test(mod), 'moderator gets all three reports')
-  assert(r.failedTypes.length === 0 && !r.scenarioFailed, 'nothing should fail')
+  assert(r.failedTypes.length === 0, 'nothing should fail')
   const p = calls.find(c => c.label === 'consolidate').prompt
   assert(/## Blast radius/.test(p) && /## Dissent/.test(p), 'consolidation sections')
 })
@@ -117,27 +111,13 @@ await test('moderator fails: type in failedTypes and marked in the header', asyn
   assert(/no consensus for design/.test(calls.find(c => c.label === 'consolidate').prompt), 'header marks failure')
 })
 
-await test('scenarios disabled: no scenario agents, moderators get none', async () => {
-  const { agent, calls } = makeAgent()
-  const r = await run({ ...baseArgs, scenarios: false }, agent)
-  assert(!calls.some(c => c.agentType?.startsWith('review-scenario')), 'scenario agents started')
-  assert(/SCENARIO_RUN=none/.test(calls.find(c => c.label === 'moderate:correctness').prompt), 'moderator without scenarios')
-  assert(r.scenarioFailed === false, 'disabled scenarios are not a failure')
-})
-
-await test('scenario runner failure is reported as scenarioFailed', async () => {
-  const { agent } = makeAgent({ fail: new Set(['scenarios:run']) })
-  const r = await run(baseArgs, agent)
-  assert(r.scenarioFailed === true, 'scenarioFailed expected')
-})
-
 await test('CI status and known issues reach the consolidation', async () => {
   const { agent, calls } = makeAgent()
   await run({ ...baseArgs, ciStatus: 'qa: fail (spotlessCheck)', knownIssues: 'thread switch on the read side' }, agent)
   const p = calls.find(c => c.label === 'consolidate').prompt
   assert(/qa: fail \(spotlessCheck\)/.test(p), 'CI status listed')
   assert(/thread switch on the read side/.test(p), 'known issues listed')
-  assert(calls.filter(c => c.agentType?.startsWith('review-') && c.agentType !== 'review-moderator' && !c.agentType.startsWith('review-scenario'))
+  assert(calls.filter(c => c.agentType?.startsWith('review-') && c.agentType !== 'review-moderator')
     .every(c => /CI_STATUS=qa: fail/.test(c.prompt)), 'reviewers get the CI status')
 })
 

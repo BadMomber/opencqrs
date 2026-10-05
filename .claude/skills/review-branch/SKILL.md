@@ -10,7 +10,7 @@ Reviews the committed state of the current branch, e.g. before opening a PR. Sam
 ## Usage
 
 ```
-/review-branch [<base-branch>] [--no-scenarios] [--known "<known issue>"]
+/review-branch [<base-branch>] [--known "<known issue>"]
 ```
 
 Default base: `main` on `upstream` (if present, otherwise `origin`). Pass e.g. `origin/main` explicitly to review against the fork.

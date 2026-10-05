@@ -51,5 +51,5 @@ Deterministic checks belong to the build and CI, not to the review: compilation,
 - Every finding names a concrete scenario: input/state → wrong behavior, or a measurable benefit.
 - Only code the diff changes or breaks through the change. No style preferences, no over-engineering.
 - Read changed code in context: callers, implementations, tests, neighbouring classes in the same package.
-- Do not run Gradle builds or tests. If a claim could only be confirmed by running something, say so in the finding ("Unverified") — the consumer scenarios provide runtime evidence, and the moderator weighs it.
+- Do not run Gradle builds or tests. If a claim could only be confirmed by running something, say so in the finding ("Unverified"); the moderator weighs it.
 - Reviewers never change code.

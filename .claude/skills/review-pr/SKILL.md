@@ -1,6 +1,6 @@
 ---
 name: review-pr
-description: "Ensemble code review of a GitHub PR for OpenCQRS (all agents on Sonnet): checks out the PR head into a worktree, runs the opencqrs-review workflow (3 independent reviewers per type for correctness, design, tests & docs, impact; one moderator per type; consumer scenarios as mini apps) and offers to post findings as PR comments. Trigger: /review-pr <number|url>, 'review the PR'"
+description: "Ensemble code review of a GitHub PR for OpenCQRS (all agents on Sonnet): checks out the PR head into a worktree, runs the opencqrs-review workflow (3 independent reviewers per type for correctness, design, tests & docs, impact; one moderator per type) and offers to post findings as PR comments. Trigger: /review-pr <number|url>, 'review the PR'"
 ---
 
 # /review-pr
@@ -16,17 +16,16 @@ Orchestration: workflow `opencqrs-review` (`.claude/workflows/opencqrs-review.js
 ## Usage
 
 ```
-/review-pr [<PR number or URL>] [--no-scenarios] [--known "<known issue>; <known issue>"]
+/review-pr [<PR number or URL>] [--known "<known issue>; <known issue>"]
 ```
 
-Without a number: the PR of the current branch (`gh pr view --json number`). `--no-scenarios` disables the consumer scenarios (mini apps). `--known` lists issues the team already knows about (e.g. fixed in another PR); matching findings are marked "known" and do not count for the verdict.
+Without a number: the PR of the current branch (`gh pr view --json number`). `--known` lists issues the team already knows about (e.g. fixed in another PR); matching findings are marked "known" and do not count for the verdict.
 
 ## Prerequisites
 
 - `gh` logged in, `jq` installed
-- For the scenarios: a working Gradle build; Docker for scenarios that need EventSourcingDB (they are skipped otherwise)
-- All agent types used by the workflow are registered in the session (`review-correctness`, `-design`, `-tests-docs`, `-impact`, `-moderator`, `-scenario-designer`, `-scenario-runner`). Agent files added or renamed during a session are only picked up after a short delay or a new session; a missing type makes that part fail (`failedTypes`, `scenarioFailed`) — resume the run once it is available.
-- Invoking the skill is the opt-in for the workflow: 19 agents (12 reviewers, 4 moderators, 2 scenario agents, 1 consolidation), 17 with `--no-scenarios`
+- All agent types used by the workflow are registered in the session (`review-correctness`, `-design`, `-tests-docs`, `-impact`, `-moderator`). Agent files added or renamed during a session are only picked up after a short delay or a new session; a missing type makes that part fail (`failedTypes`) — resume the run once it is available.
+- Invoking the skill is the opt-in for the workflow: 17 agents (12 reviewers, 4 moderators, 1 consolidation)
 
 ## Procedure
 
@@ -62,8 +61,7 @@ Workflow(name: "opencqrs-review", args: {
   reportsDir: REPORTS_DIR, reviewFile: REVIEW_FILE, headSha: HEAD_SHA, baseRef: BASE_REF,
   label: LABEL, title: TITLE, author: AUTHOR, commits: COMMITS, files: FILES, shortstat: SHORTSTAT,
   behindBase: BEHIND_BASE, date: <today, YYYY-MM-DD>, goal: <sentence from step 3>,
-  ciStatus: <text from step 2>, scenarioDir: SCENARIO_DIR,
-  scenarios: <false with --no-scenarios, otherwise true>,
+  ciStatus: <text from step 2>,
   knownIssues: <text of --known, omit if not given>
 })
 ```
@@ -74,7 +72,7 @@ Pass args as a JSON object, not as a string. While the workflow runs, do not reb
 
 ### 5. Check the result
 
-After the notification: is `failedTypes` empty and `scenarioFailed` false? Does `REVIEW_FILE` exist and is it non-empty (`ls -la`, do not read the whole file)? Report failures to the user and offer a resume before cleaning up.
+After the notification: is `failedTypes` empty? Does `REVIEW_FILE` exist and is it non-empty (`ls -la`, do not read the whole file)? Report failures to the user and offer a resume before cleaning up.
 
 ### 6. Clean up
 
@@ -82,11 +80,11 @@ After the notification: is `failedTypes` empty and `scenarioFailed` false? Does 
 .claude/scripts/review-cleanup.sh <SLUG>
 ```
 
-Removes the worktree and the ref. Reports and mini apps stay under `.review/<SLUG>/` (gitignored).
+Removes the worktree and the ref. Reports stay under `.review/<SLUG>/` (gitignored).
 
 ### 7. Show the result
 
-In the chat only: verdict, blast radius summary, CI status, scenario results (holds/broken/skipped), the summary table from `rows` (with consensus and status), consensus counters per type, path of the review file. Name dissent rows explicitly — they need the user's decision. No full texts.
+In the chat only: verdict, blast radius summary, CI status, the summary table from `rows` (with consensus and status), consensus counters per type, path of the review file. Name dissent rows explicitly — they need the user's decision. No full texts.
 
 ### 8. PR comments (optional)
 
@@ -104,7 +102,7 @@ with `commit_id` = `HEAD_SHA`, `event: "COMMENT"`, `body` = summary table (selec
 
 ## Rules
 
-- Never change code in the main repository, never commit or push. Mini apps exist only under `.review/<SLUG>/scenarios`.
+- Never change code in the main repository, never commit or push.
 - Never publish anything on GitHub without the user's explicit selection.
 - Orchestration lives in the workflow — do not start reviewers via the Agent tool alongside it, and do not pass a different model.
 - Only note how far the branch is behind the base; do not rebase.

@@ -71,13 +71,12 @@ git worktree prune
 if [ -f "$dir/.head" ] && { [ -f "$dir/review.md" ] || [ -n "$(ls -A "$dir/reports" 2>/dev/null)" ]; }; then
   old="$dir/archive/$(cut -c1-8 "$dir/.head")"
   mkdir -p "$old"
-  for item in review.md reports gates.md gates scenarios; do
+  for item in review.md reports; do
     [ -e "$dir/$item" ] && mv "$dir/$item" "$old/"
   done
 fi
 rm -rf "$dir/by-file"
 mkdir -p "$dir/by-file" "$dir/reports"
-rm -rf "$dir/scenarios"; mkdir -p "$dir/scenarios"
 git worktree add -q --detach "$src" "$head_ref"
 echo "$head_sha" > "$dir/.head"
 
@@ -103,7 +102,6 @@ DIFF_FILES=$dir/files.txt
 DIFF_BY_FILE_DIR=$dir/by-file
 FULL_DIFF=$dir/full.diff
 REPORTS_DIR=$dir/reports
-SCENARIO_DIR=$dir/scenarios
 REVIEW_FILE=$dir/review.md
 HEAD_REF=$head_ref
 HEAD_SHA=$head_sha

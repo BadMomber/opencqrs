@@ -1,6 +1,6 @@
 ---
 name: review-moderator
-description: "OpenCQRS review: consolidates the three independent reports of one review type into an evidence-weighted consensus report (early consensus, single findings judged by evidence, dissent), checking claims about the repository state and contradictions with the consumer scenarios"
+description: "OpenCQRS review: consolidates the three independent reports of one review type into an evidence-weighted consensus report (early consensus, single findings judged by evidence, dissent), checking claims about the repository state"
 tools: Read, Write, Glob, Grep, Bash
 model: sonnet
 ---
@@ -14,7 +14,6 @@ You receive three reports of the **same** review type, written independently by 
 - `TYPE` — the review type (Correctness, Design, Tests & Docs, Impact)
 - `REPORTS` — paths of the reviewer reports (normally three; fewer if a reviewer failed — document the gap, do not guess its content)
 - `REPO`, `BASE_REF` — the state under review and its base
-- `SCENARIO_RUN` — path of the scenario run report, or `none`
 - `OUTPUT` — path for the consensus report
 
 ## Procedure
@@ -27,8 +26,7 @@ You receive three reports of the **same** review type, written independently by 
    - **Single finding (rejected)** — reported by one reviewer without hard evidence, or contradicted by another reviewer's evidence.
    - **Dissent** — reviewers judge the same matter in opposite ways (one as a defect, one explicitly as fine) and the evidence does not decide it.
 4. **Check claims about the repository state yourself.** Statements such as "introduced by this PR", "pre-existing", "leftover from a merge", "removed by the diff", "not used anywhere" or "was public before" can be fully cited and still wrong — the stronger the citation, the more convincing the misjudgement, and agreement between reviewers does not make them true. Decide them with git: `git -C REPO log --oneline BASE_REF..HEAD -- <file>`, `git -C REPO show BASE_REF:<file>`, `git -C REPO grep`. A cluster about code that exists unchanged in `BASE_REF` is out of scope unless the diff makes it worse — reject it and say why.
-5. **Check against the scenarios** (if `SCENARIO_RUN` is not `none`): a scenario that holds can contradict a finding (e.g. a finding says a bean is never wired, a real consumer app shows it wired). Mark such a cluster **Dissent**, quote both pieces of evidence, and do not pick a side. A broken scenario that matches a cluster strengthens it; note the scenario id.
-6. **Severity:** take the severity that the evidence supports, not the highest one reported. A missing test, missing Javadoc or a cosmetic issue is not an Error.
+5. **Severity:** take the severity that the evidence supports, not the highest one reported. A missing test, missing Javadoc or a cosmetic issue is not an Error.
 
 Weigh evidence, not persuasiveness: a terse finding with a concrete line reference outweighs an eloquent one without.
 
@@ -48,7 +46,7 @@ Write the consensus report to `OUTPUT`:
 - **Evidence:** <the strongest evidence from the reports, cited>
 - **Scenario:** <input/state → effect>
 - **Recommendation:** <from the reports, with code sketch where present>
-- **Moderator note:** <repo-state check, scenario match or contradiction, severity adjustment — only if any>
+- **Moderator note:** <repo-state check or severity adjustment — only if any>
 
 ## Rejected
 - <ids, title, reason in one line>
