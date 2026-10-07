@@ -69,7 +69,9 @@ if [ -d "$src" ]; then git worktree remove --force "$src" 2>/dev/null || rm -rf 
 git worktree prune
 # Keep the results of an earlier run: move them to archive/<old head> instead of overwriting them.
 if [ -f "$dir/.head" ] && { [ -f "$dir/review.md" ] || [ -n "$(ls -A "$dir/reports" 2>/dev/null)" ]; }; then
+  # Same head reviewed again: never overwrite an earlier archive, number the new one instead.
   old="$dir/archive/$(cut -c1-8 "$dir/.head")"
+  if [ -e "$old" ]; then n=2; while [ -e "$old-$n" ]; do n=$((n + 1)); done; old="$old-$n"; fi
   mkdir -p "$old"
   for item in review.md reports; do
     [ -e "$dir/$item" ] && mv "$dir/$item" "$old/"

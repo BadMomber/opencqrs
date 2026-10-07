@@ -7,7 +7,7 @@ description: "Ensemble code review of a GitHub PR for OpenCQRS (all agents on So
 
 Ensemble review of a pull request. The skill only reports — it never changes code, never commits and never posts anything without approval.
 
-Orchestration: workflow `opencqrs-review` (`.claude/workflows/opencqrs-review.js`), shared with `/review-branch`. Domain foundation for the agents: `.claude/review/opencqrs-context.md`.
+Orchestration: workflow `opencqrs-review` (`.claude/workflows/opencqrs-review.js`). Domain foundation for the agents: `.claude/review/opencqrs-context.md`.
 
 **Review, not CI.** Compilation, formatting and tests run in CI (`.github/workflows/qa.yml`); the skill reads their status and does not repeat them. The agents spend their effort on judgement.
 
@@ -24,12 +24,10 @@ Without a number: the PR of the current branch (`gh pr view --json number`). `--
 ## Prerequisites
 
 - `gh` logged in, `jq` installed
-- All agent types used by the workflow are registered in the session (`review-correctness`, `-design`, `-tests-docs`, `-impact`, `-moderator`). Agent files added or renamed during a session are only picked up after a short delay or a new session; a missing type makes that part fail (`failedTypes`) — resume the run once it is available.
+- All agent types used by the workflow are registered in the session (`review-correctness`, `review-design`, `review-tests-docs`, `review-impact`, `review-moderator`). Agent files added or renamed during a session are only picked up after a short delay or a new session; a missing type makes that part fail (`failedTypes`) — resume the run once it is available.
 - Invoking the skill is the opt-in for the workflow: 17 agents (12 reviewers, 4 moderators, 1 consolidation)
 
 ## Procedure
-
-At the start, create one task per step with `TaskCreate` (prefix `[review-pr]`).
 
 ### 1. Prepare
 
@@ -37,7 +35,7 @@ At the start, create one task per step with `TaskCreate` (prefix `[review-pr]`).
 .claude/scripts/review-prepare.sh pr <nr|url>
 ```
 
-The script finds the remote of the PR's base repository itself (for forks e.g. `upstream`), creates the worktree under `.review/pr-<nr>/src`, archives results of an earlier run under `archive/<old head>` and generates the diff artifacts. Remember the `KEY=VALUE` output.
+The script finds the remote of the PR's base repository itself (for forks e.g. `upstream`), creates the worktree under `.review/pr-<nr>/src`, archives results of an earlier run under `archive/<old head>` (numbered if that head was archived before) and generates the diff artifacts. Remember the `KEY=VALUE` output.
 
 Show the user: `LABEL`, author, `COMMITS`, `FILES`, `SHORTSTAT`, `BEHIND_BASE`.
 
@@ -67,6 +65,8 @@ Workflow(name: "opencqrs-review", args: {
 ```
 
 Pass args as a JSON object, not as a string. While the workflow runs, do not rebuild anything in parallel.
+
+If the workflow was changed during the session, the named lookup may still serve the old script (check the summary line of the tool result against `meta.description`). Then start it by path instead: `Workflow(scriptPath: ".claude/workflows/opencqrs-review.js", args: …)`.
 
 **On abort or failure:** do not restart; use `Workflow(scriptPath: <path from the tool result>, resumeFromRunId: <runId>)` with identical args.
 
